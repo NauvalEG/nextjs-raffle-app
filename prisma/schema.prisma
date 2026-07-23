@@ -1,0 +1,154 @@
+// Raffle App — Prisma schema
+// Entities per PRD v1.3 §6.3 and FSDs E1-01..E3-01.
+// Hard rules encoded here:
+//  - Ticket numbers unique per raffle (@@unique) + never reused (RetiredTicket ledger, D-E03).
+//  - DrawEvent facts are write-once; only status + supersededById are ever mutated (enforced in actions).
+//  - supersededById is @unique: an event can supersede at most one original (E2-02 Rule 2).
+//  - AuditLog is append-only; no update/delete path exists anywhere in the app.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL") // pooled (pgbouncer) — runtime
+  directUrl = env("DIRECT_URL") // unpooled — migrations only
+}
+
+enum RaffleStatus {
+  DRAFT
+  OPEN
+  LOCKED
+  DRAWN
+  COMPLETED
+}
+
+enum RevealMode {
+  SEQUENTIAL
+  SIMULTANEOUS
+}
+
+enum DrawEventStatus {
+  PENDING
+  CLAIMED
+  DISQUALIFIED
+  RELEASED_TO_POOL
+}
+
+model Raffle {
+  id          String       @id @default(cuid())
+  title       String       @db.VarChar(200)
+  description String?      @db.VarChar(2000)
+  status      RaffleStatus @default(DRAFT)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  prizeTypes     PrizeType[]
+  rounds         DrawRound[]
+  entries        Entry[]
+  retiredTickets RetiredTicket[]
+  auditLogs      AuditLog[]
+}
+
+model PrizeType {
+  id       String @id @default(cuid())
+  raffleId String
+  name     String @db.VarChar(100)
+
+  raffle      Raffle            @relation(fields: [raffleId], references: [id], onDelete: Cascade)
+  allocations RoundAllocation[]
+
+  // Case-insensitive uniqueness is additionally enforced in the Server Action (A-09).
+  @@unique([raffleId, name])
+}
+
+model DrawRound {
+  id         String     @id @default(cuid())
+  raffleId   String
+  order      Int
+  label      String     @db.VarChar(100)
+  revealMode RevealMode @default(SEQUENTIAL)
+
+  raffle      Raffle            @relation(fields: [raffleId], references: [id], onDelete: Cascade)
+  allocations RoundAllocation[]
+
+  @@unique([raffleId, order])
+}
+
+model RoundAllocation {
+  id          String @id @default(cuid())
+  roundId     String
+  prizeTypeId String
+  quantity    Int
+
+  round      DrawRound   @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  prizeType  PrizeType   @relation(fields: [prizeTypeId], references: [id], onDelete: Cascade)
+  drawEvents DrawEvent[]
+}
+
+model Entry {
+  id           String   @id @default(cuid())
+  raffleId     String
+  ticketNumber Int
+  fullName     String   @db.VarChar(200)
+  contact      String?  @db.VarChar(200) // [SENSITIVE] admin-only; never on any public surface
+  createdAt    DateTime @default(now())
+
+  raffle     Raffle      @relation(fields: [raffleId], references: [id], onDelete: Cascade)
+  drawEvents DrawEvent[]
+
+  @@unique([raffleId, ticketNumber])
+  @@index([raffleId])
+}
+
+// Never-reuse ledger (E1-02 Ticket Integrity Rule 2 / A12): every ticket number ever
+// assigned in a raffle is recorded here and never removed, so a removed entrant's
+// number stays retired even though the Entry row is hard-deleted.
+model RetiredTicket {
+  id           String @id @default(cuid())
+  raffleId     String
+  ticketNumber Int
+
+  raffle Raffle @relation(fields: [raffleId], references: [id], onDelete: Cascade)
+
+  @@unique([raffleId, ticketNumber])
+}
+
+model DrawEvent {
+  id                   String          @id @default(cuid())
+  roundAllocationId    String
+  sequenceInAllocation Int
+  winnerEntryId        String
+  status               DrawEventStatus @default(PENDING)
+  supersededById       String?         @unique
+  createdAt            DateTime        @default(now())
+
+  roundAllocation RoundAllocation @relation(fields: [roundAllocationId], references: [id])
+  winnerEntry     Entry           @relation(fields: [winnerEntryId], references: [id])
+  supersededBy    DrawEvent?      @relation("Supersession", fields: [supersededById], references: [id])
+  supersedes      DrawEvent?      @relation("Supersession")
+  auditLogs       AuditLog[]
+
+  @@index([roundAllocationId])
+  @@index([winnerEntryId])
+}
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  raffleId    String
+  drawEventId String?
+  entityType  String // "raffle" | "draw_event"
+  entityId    String
+  action      String // "open" | "lock" | "complete" | "draw" | "claimed" | "disqualified" | "released_to_pool" | "redraw"
+  oldValue    Json?
+  newValue    Json?
+  reason      String?  @db.VarChar(500)
+  actor       String   @default("admin")
+  createdAt   DateTime @default(now())
+
+  raffle    Raffle     @relation(fields: [raffleId], references: [id], onDelete: Cascade)
+  drawEvent DrawEvent? @relation(fields: [drawEventId], references: [id])
+
+  @@index([raffleId, createdAt])
+}
