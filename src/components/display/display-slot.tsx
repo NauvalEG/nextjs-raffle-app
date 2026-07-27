@@ -115,22 +115,24 @@ export function DisplaySlot({
       className={
         // @container + cqi-based type: the card scales to ITS OWN width, not
         // the viewport's, so a 3-across or 4-across block stays readable
-        // without breakpoint guesswork.
-        "@container flex flex-col items-center justify-center " +
-        "rounded-[2.5rem] px-[8%] py-7 text-center shadow-2xl shadow-black/30 " +
-        "transition-colors duration-300 " +
+        // without breakpoint guesswork. Height follows from the type and the
+        // percentage padding, which keeps the card's proportions constant as
+        // the board's squeeze order narrows it.
+        "@container font-sans flex min-w-0 flex-col items-center justify-center " +
+        "rounded-[clamp(1rem,4cqi,3rem)] px-[7%] py-[6%] text-center " +
+        "shadow-2xl shadow-black/30 transition-colors duration-300 " +
         (drawn ? "bg-white" : "bg-white/75 backdrop-blur-sm") +
         (className ? ` ${className}` : "")
       }
     >
-      <p className="text-[clamp(1.5rem,9cqi,2.5rem)] leading-tight font-bold tracking-tight text-balance break-words text-neutral-950">
+      <p className="text-[clamp(1.5rem,12cqi,7rem)] leading-[1.05] font-bold tracking-tight text-balance break-words text-neutral-950">
         {state === undefined ? (
-          <span className="text-[clamp(1rem,5cqi,1.5rem)] font-normal text-neutral-500">
+          <span className="text-[clamp(1rem,6cqi,2.5rem)] font-normal text-neutral-500">
             not yet drawn
           </span>
         ) : state.kind === "redrawing" ? (
           // Distinct pulsing treatment; no reason/status language (BR3).
-          <span className="animate-pulse text-[clamp(1rem,5cqi,1.5rem)] font-normal text-neutral-600">
+          <span className="animate-pulse text-[clamp(1rem,6cqi,2.5rem)] font-normal text-neutral-600">
             Redrawing…
           </span>
         ) : state.kind === "scrambling" ? (
@@ -140,10 +142,10 @@ export function DisplaySlot({
         )}
       </p>
 
-      <p className="mt-4 text-[clamp(0.8rem,2.6cqi,1rem)] font-normal text-neutral-700">
+      <p className="mt-[4%] text-[clamp(0.75rem,3.2cqi,1.5rem)] font-normal tracking-[0.12em] text-neutral-700 uppercase">
         Prize
       </p>
-      <p className="text-[clamp(1rem,4.4cqi,1.35rem)] leading-snug font-bold text-balance break-words text-neutral-950">
+      <p className="text-[clamp(1rem,5.8cqi,3.5rem)] leading-snug font-bold text-balance break-words text-neutral-950">
         {prizeLabel}
       </p>
     </div>
