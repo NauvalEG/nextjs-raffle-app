@@ -1,5 +1,6 @@
 import {
   channelName,
+  displayMessageSchema,
   type DisplayMessage,
 } from "@/lib/broadcast";
 
@@ -28,16 +29,42 @@ let channel: BroadcastChannel | null = null;
  * returns the cleanup that closes it. Safe when BroadcastChannel is
  * unsupported (channel stays null; emitReveal no-ops — E2-01 A4).
  */
-export function initRevealChannel(raffleId: string): () => void {
+export function initRevealChannel(
+  raffleId: string,
+  /**
+   * Called when a display tab announces itself. A projector opened after the
+   * admin has already advanced rounds would otherwise sit on round 1, so the
+   * draw screen re-sends its current round in response.
+   */
+  onDisplayReady?: () => void
+): () => void {
   channel?.close();
   channel =
     typeof BroadcastChannel !== "undefined"
       ? new BroadcastChannel(channelName(raffleId))
       : null;
+  if (channel && onDisplayReady) {
+    channel.onmessage = (event) => {
+      const parsed = displayMessageSchema.safeParse(event.data);
+      if (parsed.success && parsed.data.type === "display-ready") {
+        onDisplayReady();
+      }
+    };
+  }
   return () => {
     channel?.close();
     channel = null;
   };
+}
+
+/**
+ * Tells the display which round to show. The display renders that round and
+ * holds it until the next set-round — reveals never move it (E2-01 round
+ * hand-off is admin-driven).
+ */
+export function emitSetRound(roundId: string): void {
+  const message: DisplayMessage = { type: "set-round", roundId };
+  channel?.postMessage(message);
 }
 
 /**

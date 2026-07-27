@@ -31,6 +31,14 @@ export const displayMessageSchema = z.discriminatedUnion("type", [
     slotId: z.string().min(1),
     fullName: z.string().min(1),
   }),
+  // Round hand-off: the display renders exactly ONE round at a time and holds
+  // it until the admin explicitly finishes the round. Carries a round id only
+  // — the display already has every label from display-meta, so no round text
+  // travels on the channel.
+  z.object({
+    type: z.literal("set-round"),
+    roundId: z.string().min(1),
+  }),
   // Internal (E2-01 A7): one-shot ping posted by the display tab on mount so the
   // admin connection indicator can switch to "connected". Not a reveal message.
   z.object({
@@ -43,6 +51,25 @@ export type DisplayMessage = z.infer<typeof displayMessageSchema>;
 /** sessionStorage key for the display tab's reveal log (E2-01 A9). */
 export function revealLogKey(raffleId: string): string {
   return `raffle-display-log-${raffleId}`;
+}
+
+/**
+ * sessionStorage key for the round the display is currently showing. Same
+ * per-tab lifetime as the reveal log (D-003): a mid-event projector refresh
+ * must come back on the round the audience was already watching, not reset to
+ * round 1.
+ */
+export function currentRoundKey(raffleId: string): string {
+  return `raffle-display-round-${raffleId}`;
+}
+
+/**
+ * sessionStorage key for the ADMIN tab's record of the last round it handed
+ * off to the display. Read-back only — it keeps the draw screen's "Showing …"
+ * line honest across an admin refresh and never causes a broadcast.
+ */
+export function adminDisplayRoundKey(raffleId: string): string {
+  return `raffle-admin-display-round-${raffleId}`;
 }
 
 export type RevealLogEntry = { slotId: string; fullName: string };

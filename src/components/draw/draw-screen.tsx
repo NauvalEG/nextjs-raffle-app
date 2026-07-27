@@ -23,10 +23,11 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { adminDisplayRoundKey } from "@/lib/broadcast";
 import { executeRound } from "@/actions/draw";
 import type { DrawScreenRound, DrawScreenSlot, DrawScreenState } from "@/actions/draw";
 
-import { emitReveal, initRevealChannel } from "./reveal-bus";
+import { emitReveal, emitSetRound, initRevealChannel } from "./reveal-bus";
 import { DisplayControl } from "./display-control";
 import { HistoryPanel } from "./history-panel";
 
@@ -60,9 +61,57 @@ export function DrawScreen({ state }: { state: DrawScreenState }) {
   const [confirmOpen, setConfirmOpen] = React.useState(false);
   const [pending, startTransition] = React.useTransition();
 
+  // The round the PUBLIC DISPLAY is showing. Deliberately separate from
+  // currentRoundId: the operator can read ahead on the admin screen while the
+  // audience stays on the round still being celebrated.
+  //
+  // NOTHING here ever pushes a round change on its own — not mount, not a
+  // draw, not advancing the admin's own round. set-round is emitted ONLY from
+  // finishDisplayRound(), i.e. only when the operator clicks Finish round.
+  // Without that rule an admin page refresh would silently move the audience.
+  //
+  // The display defaults to the first round on its own, so this mirror starts
+  // there too (restored from this tab's storage across an admin refresh, which
+  // keeps the "Showing …" line honest without emitting anything).
+  const [displayRoundId, setDisplayRoundId] = React.useState<string | null>(
+    state.rounds[0]?.id ?? null
+  );
+  const [finishedRoundIds, setFinishedRoundIds] = React.useState<string[]>([]);
+  // Set once the operator has handed off at least one round. Until then a
+  // late-connecting display is already on the round we think it is, so there
+  // is nothing to re-send.
+  const hasHandedOffRef = React.useRef(false);
+  // Mirror for the display-ready callback, whose identity must stay stable.
+  const displayRoundIdRef = React.useRef(displayRoundId);
+  displayRoundIdRef.current = displayRoundId;
+
+  // Restore which round the operator last handed off to, so an admin refresh
+  // mid-event does not reset the "Showing …" line to round 1.
+  React.useEffect(() => {
+    try {
+      const stored = sessionStorage.getItem(adminDisplayRoundKey(state.raffleId));
+      if (stored && state.rounds.some((r) => r.id === stored)) {
+        hasHandedOffRef.current = true;
+        setDisplayRoundId(stored);
+      }
+    } catch {
+      // Storage unavailable: the line just starts at round 1.
+    }
+  }, [state.raffleId, state.rounds]);
+
   // E2-01: open the raffle-scoped BroadcastChannel emitReveal posts on.
-  // initRevealChannel returns its own cleanup.
-  React.useEffect(() => initRevealChannel(state.raffleId), [state.raffleId]);
+  // initRevealChannel returns its own cleanup. A display tab that connects
+  // AFTER a hand-off gets the current round re-sent, so a projector opened
+  // late does not sit on round 1 while the audience is on round 3.
+  React.useEffect(
+    () =>
+      initRevealChannel(state.raffleId, () => {
+        if (hasHandedOffRef.current && displayRoundIdRef.current) {
+          emitSetRound(displayRoundIdRef.current);
+        }
+      }),
+    [state.raffleId]
+  );
 
   // Merge server-committed rounds with rounds drawn during this session.
   const rounds: DrawScreenRound[] = state.rounds.map((r) => {
@@ -92,6 +141,38 @@ export function DrawScreen({ state }: { state: DrawScreenState }) {
   // Drawn rounds shown as read-only history; the active central round joins it
   // once the admin advances past it (or on completion, per FSD 4.5 A4).
   const history = rounds.filter((r) => r.drawn && (done || r.id !== currentRoundId));
+
+  // --- Public display round hand-off -------------------------------------
+  const displayRound = displayRoundId
+    ? (rounds.find((r) => r.id === displayRoundId) ?? null)
+    : null;
+  const displayRevealed = displayRound ? revealedOf(displayRound) : 0;
+  const displayNext = displayRound
+    ? (rounds[rounds.findIndex((r) => r.id === displayRound.id) + 1] ?? null)
+    : null;
+  const displayFinished = !!displayRound && finishedRoundIds.includes(displayRound.id);
+  // Always available: the operator runs the room and may need to move on with
+  // slots unrevealed (a prize withdrawn, time running out). Unrevealed slots
+  // are called out below as a caution, not enforced as a block.
+  const canFinishDisplayRound = !!displayRound && !displayFinished;
+  const displayFullyRevealed =
+    !!displayRound && displayRound.drawn && displayRevealed >= displayRound.totalSlots;
+
+  function finishDisplayRound() {
+    if (!displayRound || !canFinishDisplayRound) return;
+    setFinishedRoundIds((prev) => [...prev, displayRound.id]);
+    // The ONLY place a round change reaches the display. With no next round
+    // the final round stays on screen.
+    const target = displayNext ?? displayRound;
+    hasHandedOffRef.current = true;
+    setDisplayRoundId(target.id);
+    emitSetRound(target.id);
+    try {
+      sessionStorage.setItem(adminDisplayRoundKey(state.raffleId), target.id);
+    } catch {
+      // Storage unavailable: the hand-off still happened on the channel.
+    }
+  }
 
   function runExecute(round: DrawScreenRound) {
     startTransition(async () => {
@@ -312,6 +393,49 @@ export function DrawScreen({ state }: { state: DrawScreenState }) {
               </CardContent>
             </Card>
           ) : null}
+
+          {displayRound && (
+            <Card className="mt-4" data-slot="display-round-control">
+              <CardHeader>
+                <CardTitle className="text-base">Public display</CardTitle>
+                <CardDescription>
+                  Showing{" "}
+                  <span className="text-foreground font-medium">
+                    {displayRound.label}
+                  </span>{" "}
+                  — {displayRevealed} of {displayRound.totalSlots} revealed
+                  {displayFinished ? " — finished" : ""}
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {displayFinished && !displayNext ? (
+                  <p className="text-muted-foreground text-sm">
+                    All rounds shown. {displayRound.label} stays on the display.
+                  </p>
+                ) : (
+                  <>
+                    <Button
+                      className="w-full"
+                      variant="secondary"
+                      disabled={!canFinishDisplayRound}
+                      onClick={finishDisplayRound}
+                    >
+                      {displayNext
+                        ? `Finish round — show ${displayNext.label}`
+                        : "Finish round"}
+                    </Button>
+                    {!displayFullyRevealed && (
+                      <p className="text-muted-foreground mt-2 text-sm">
+                        {displayRevealed} of {displayRound.totalSlots} slots
+                        revealed — finishing now moves the audience on without
+                        showing the rest.
+                      </p>
+                    )}
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          )}
         </div>
 
         <HistoryPanel rounds={history} />

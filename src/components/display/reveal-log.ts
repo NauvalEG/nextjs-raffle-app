@@ -1,4 +1,8 @@
-import { revealLogKey, type RevealLogEntry } from "@/lib/broadcast";
+import {
+  currentRoundKey,
+  revealLogKey,
+  type RevealLogEntry,
+} from "@/lib/broadcast";
 
 // sessionStorage reveal log (E2-01 Feature 4 / A9). Key raffle-display-log-
 // <raffleId>, value a JSON array of {slotId, fullName} in receipt order,
@@ -67,4 +71,26 @@ export function supersedeRevealLog(
   if (index >= 0) entries[index] = entry;
   else entries.push(entry);
   writeLog(raffleId, entries);
+}
+
+/**
+ * Reads the round the display was last showing, or null when nothing is
+ * stored. The caller must still verify the id exists in display-meta — a
+ * stored round can outlive a structural change.
+ */
+export function readCurrentRound(raffleId: string): string | null {
+  try {
+    return sessionStorage.getItem(currentRoundKey(raffleId));
+  } catch {
+    return null;
+  }
+}
+
+/** Persists the round now on display. Silent on failure, as with the log (A5). */
+export function writeCurrentRound(raffleId: string, roundId: string): void {
+  try {
+    sessionStorage.setItem(currentRoundKey(raffleId), roundId);
+  } catch {
+    // Quota/disabled: the live board is still correct; only refresh degrades.
+  }
 }

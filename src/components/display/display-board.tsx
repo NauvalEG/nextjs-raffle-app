@@ -11,8 +11,10 @@ import type { DisplayMeta } from "@/lib/display-meta";
 
 import {
   appendRevealLog,
+  readCurrentRound,
   readRevealLog,
   supersedeRevealLog,
+  writeCurrentRound,
 } from "./reveal-log";
 import { DisplaySlot, type SlotState } from "./display-slot";
 
@@ -31,6 +33,47 @@ const MSG_NOT_AVAILABLE = "This raffle display is not available.";
 const MSG_LOAD_FAILED = "Unable to load the display. Refresh to try again.";
 const MSG_NO_ROUNDS = "The draw has not been set up yet.";
 
+// Full-bleed projector backdrop. Static asset in /public; the space-bearing
+// filename must stay percent-encoded inside the CSS url().
+const BACKGROUND_URL = "/BG_Undian.jpeg";
+
+// Card block geometry, in rem. Cards are FLUID: the grid is laid out in
+// `columns * 2` half-columns of 1fr and each card spans 2, so the column count
+// is guaranteed at any viewport (cards narrow, they never re-wrap into a
+// ragged shape) and a partial final row can be offset by one half-column to
+// centre under the rows above.
+const CARD_MAX_REM = 26; // caps the block width on very large screens
+const GAP_REM = 2.5; // must track gap-10 below
+const MAX_COLUMNS = 4; // beyond this the cards get too small to read from a room
+
+/**
+ * Chooses the column count that makes the most balanced block for `count`
+ * slots: start near-square, then widen only when a wider row leaves fewer
+ * empty cells. 9 → 3 (a 3×3 block), 5 → 3 (3+2), 8 → 4 (4+4), 7 → 4 (4+3).
+ */
+function columnsFor(count: number): number {
+  if (count <= 1) return 1;
+  const emptyCells = (cols: number) => (cols - (count % cols)) % cols;
+  let columns = Math.min(MAX_COLUMNS, Math.ceil(Math.sqrt(count)));
+  while (columns < MAX_COLUMNS && emptyCells(columns + 1) < emptyCells(columns)) {
+    columns++;
+  }
+  return columns;
+}
+
+/** Fixed backdrop shared by every phase; scrim keeps white cards legible. */
+function Backdrop() {
+  return (
+    <div
+      aria-hidden
+      className="fixed inset-0 -z-10 bg-neutral-950 bg-cover bg-center bg-no-repeat"
+      style={{ backgroundImage: `url("${BACKGROUND_URL}")` }}
+    >
+      <div className="absolute inset-0 bg-black/25" />
+    </div>
+  );
+}
+
 export function DisplayBoard({ raffleId }: { raffleId: string }) {
   const [phase, setPhase] = React.useState<Phase>("loading");
   const [meta, setMeta] = React.useState<DisplayMeta | null>(null);
@@ -40,6 +83,11 @@ export function DisplayBoard({ raffleId }: { raffleId: string }) {
   // slotIds present on the load-time-static board (Feature 1 BR7); messages
   // addressing unknown slots are discarded from render (Feature 2 Alt 3).
   const knownSlotsRef = React.useRef<Set<string>>(new Set());
+  // The single round the audience is watching. The board renders this round
+  // and nothing else; it changes ONLY on an admin {type:'set-round'} message,
+  // never as a side effect of a reveal.
+  const [currentRoundId, setCurrentRoundId] = React.useState<string | null>(null);
+  const knownRoundsRef = React.useRef<Set<string>>(new Set());
 
   const handleMessage = React.useCallback(
     (data: unknown) => {
@@ -110,6 +158,14 @@ export function DisplayBoard({ raffleId }: { raffleId: string }) {
           });
           return;
         }
+        case "set-round": {
+          // Unknown round ids are dropped silently, same rule as unknown
+          // slotIds (BR5) — a stale admin tab can never blank the board.
+          if (!knownRoundsRef.current.has(msg.roundId)) return;
+          writeCurrentRound(raffleId, msg.roundId);
+          setCurrentRoundId(msg.roundId);
+          return;
+        }
         case "display-ready":
           // Admin-indicator ping from another display tab — not for us.
           return;
@@ -170,6 +226,16 @@ export function DisplayBoard({ raffleId }: { raffleId: string }) {
       knownSlotsRef.current = new Set(
         data.rounds.flatMap((round) => round.slots.map((slot) => slot.slotId))
       );
+      knownRoundsRef.current = new Set(data.rounds.map((round) => round.id));
+
+      // Restore the round the projector was already showing across a refresh;
+      // fall back to the first round when nothing is stored or the stored id
+      // no longer exists (structural change since it was written).
+      const stored = readCurrentRound(raffleId);
+      const restored =
+        stored !== null && knownRoundsRef.current.has(stored)
+          ? stored
+          : (data.rounds[0]?.id ?? null);
 
       // (2)+(3) Render board with the replayed log applied in the same
       // commit: each logged slot renders directly in its settled state — no
@@ -187,6 +253,7 @@ export function DisplayBoard({ raffleId }: { raffleId: string }) {
       }
       setMeta(data);
       setSlotStates(replayed);
+      setCurrentRoundId(restored);
       setPhase("ready");
 
       // (4) Subscribe only after replay (Feature 4 BR3), then (5) post the
@@ -208,9 +275,10 @@ export function DisplayBoard({ raffleId }: { raffleId: string }) {
 
   if (phase !== "ready" || meta === null) {
     return (
-      <main className="flex min-h-dvh flex-1 items-center justify-center bg-neutral-950 p-8 text-neutral-50">
+      <main className="flex min-h-dvh flex-1 items-center justify-center p-8 text-neutral-50">
+        <Backdrop />
         {phase === "loading" ? null : (
-          <p className="text-center text-2xl font-medium text-neutral-300 lg:text-3xl">
+          <p className="text-center text-2xl font-medium drop-shadow-lg lg:text-3xl">
             {phase === "not-found" ? MSG_NOT_AVAILABLE : MSG_LOAD_FAILED}
           </p>
         )}
@@ -218,41 +286,73 @@ export function DisplayBoard({ raffleId }: { raffleId: string }) {
     );
   }
 
-  return (
-    <main className="min-h-dvh flex-1 bg-neutral-950 px-8 py-10 text-neutral-50 lg:px-14">
-      <h1 className="text-center text-3xl font-bold tracking-tight lg:text-5xl">
-        {meta.title}
-      </h1>
+  // Exactly one round is on screen. currentRoundId is only ever null when the
+  // raffle has no rounds at all, which the MSG_NO_ROUNDS branch covers.
+  const currentRound =
+    meta.rounds.find((round) => round.id === currentRoundId) ?? null;
 
-      {meta.rounds.length === 0 ? (
-        <p className="mt-24 text-center text-2xl font-medium text-neutral-300 lg:text-3xl">
+  return (
+    <main className="flex min-h-dvh flex-1 flex-col px-6 py-8 text-neutral-50 lg:px-10">
+      <Backdrop />
+
+      {/* The raffle title stays in the accessibility tree only — the projector
+          header is the round label (below). */}
+      <h1 className="sr-only">{meta.title}</h1>
+
+      {currentRound === null ? (
+        <p className="m-auto text-center text-2xl font-medium drop-shadow-lg lg:text-3xl">
           {MSG_NO_ROUNDS}
         </p>
       ) : (
-        <div className="mx-auto mt-10 max-w-[110rem] space-y-12">
-          {meta.rounds.map((round) => (
-            <section key={round.id}>
-              <h2 className="text-xl font-semibold tracking-widest text-neutral-400 uppercase lg:text-2xl">
-                {round.label}
-              </h2>
-              <div className="mt-4 grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(18rem,1fr))]">
-                {round.slots.map((slot) => (
-                  <DisplaySlot
-                    key={slot.slotId}
-                    prizeLabel={slot.prizeLabel}
-                    state={slotStates[slot.slotId]}
-                    onSettle={() => {
-                      const state = slotStates[slot.slotId];
-                      if (state && state.kind === "scrambling") {
-                        settleSlot(slot.slotId, state.fullName);
-                      }
+        <>
+          <h2 className="text-center text-4xl font-bold tracking-tight text-balance drop-shadow-[0_2px_12px_rgba(0,0,0,0.55)] lg:text-5xl">
+            {currentRound.label}
+          </h2>
+
+          <div className="flex flex-1 flex-col items-center justify-center">
+            {(() => {
+              const round = currentRound;
+              const count = round.slots.length;
+              const columns = columnsFor(count);
+              // Cards in the final row are shifted right by one half-column
+              // per missing card, centring them under the full rows above.
+              const lastRowCount = count % columns || columns;
+              const firstOfLastRow = count - lastRowCount;
+              const halfColumnOffset = columns - lastRowCount;
+              return (
+                <section className="w-full">
+                  <div
+                    className="mx-auto grid w-full items-stretch gap-10"
+                    style={{
+                      gridTemplateColumns: `repeat(${columns * 2}, minmax(0, 1fr))`,
+                      maxWidth: `${columns * CARD_MAX_REM + (columns - 1) * GAP_REM}rem`,
                     }}
-                  />
-                ))}
-              </div>
-            </section>
-          ))}
-        </div>
+                  >
+                    {round.slots.map((slot, index) => (
+                      <DisplaySlot
+                        key={slot.slotId}
+                        style={{
+                          gridColumn:
+                            index === firstOfLastRow
+                              ? `${halfColumnOffset + 1} / span 2`
+                              : "auto / span 2",
+                        }}
+                        prizeLabel={slot.prizeLabel}
+                        state={slotStates[slot.slotId]}
+                        onSettle={() => {
+                          const state = slotStates[slot.slotId];
+                          if (state && state.kind === "scrambling") {
+                            settleSlot(slot.slotId, state.fullName);
+                          }
+                        }}
+                      />
+                    ))}
+                  </div>
+                </section>
+              );
+            })()}
+          </div>
+        </>
       )}
     </main>
   );

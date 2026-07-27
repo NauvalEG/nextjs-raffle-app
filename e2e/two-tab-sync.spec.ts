@@ -67,7 +67,7 @@ test.describe("two-tab sync (E3-02 Feature 3)", () => {
   let round2Names: string[] = [];
   let replacementName: string;
 
-  const slots = () => display.locator('main section .grid > div');
+  const slots = () => display.locator('main section [data-slot="display-slot"]');
   const slotTexts = async () => {
     const texts = await slots().allInnerTexts();
     return texts.map((t) => t.replace(/\s+/g, " ").trim());
@@ -123,17 +123,18 @@ test.describe("two-tab sync (E3-02 Feature 3)", () => {
     await cleanupRafflesByTitle([TITLE]);
   });
 
-  test("display tab shows the structural board: rounds, 5 slots, all undrawn", async () => {
+  test("display tab shows only the current round: Round 1, 2 slots, all undrawn", async () => {
     await display.goto(`/display/${raffleId}`);
     await expect(display.getByRole("heading", { name: TITLE })).toBeVisible();
+    // Exactly one round is on screen, and its label is the visible header.
     await expect(display.getByRole("heading", { name: "Round 1" })).toBeVisible();
-    await expect(display.getByRole("heading", { name: "Round 2" })).toBeVisible();
-    await expect(slots()).toHaveCount(5);
-    await expect(display.getByText("not yet drawn")).toHaveCount(5);
+    await expect(display.getByRole("heading", { name: "Round 2" })).toHaveCount(0);
+    await expect(slots()).toHaveCount(2);
+    await expect(display.getByText("not yet drawn")).toHaveCount(2);
 
-    // Prize labels are structural and allowed.
+    // Prize labels are structural and allowed; Round 2's must not be present.
     await expect(display.getByText("Prize A")).toHaveCount(2);
-    await expect(display.getByText("Prize B")).toHaveCount(3);
+    await expect(display.getByText("Prize B")).toHaveCount(0);
   });
 
   test("sequential round: each Draw click reveals exactly the matching slot in B", async () => {
@@ -147,7 +148,7 @@ test.describe("two-tab sync (E3-02 Feature 3)", () => {
     });
 
     // Commit alone reveals nothing on the display.
-    await expect(display.getByText("not yet drawn")).toHaveCount(5);
+    await expect(display.getByText("not yet drawn")).toHaveCount(2);
 
     for (let i = 0; i < 2; i++) {
       const before = await slotTexts();
@@ -160,7 +161,7 @@ test.describe("two-tab sync (E3-02 Feature 3)", () => {
       // Exactly slot i animates and settles on the same full name shown in A.
       await expect(slots().nth(i)).toContainText(name, { timeout: 15_000 });
       const after = await slotTexts();
-      for (let j = 0; j < 5; j++) {
+      for (let j = 0; j < before.length; j++) {
         if (j !== i) {
           expect(after[j], `slot ${j} must not change on reveal ${i}`).toBe(before[j]);
         }
@@ -169,18 +170,37 @@ test.describe("two-tab sync (E3-02 Feature 3)", () => {
     expect(new Set(round1Names).size).toBe(2);
   });
 
-  test("refresh replay: revealed slots settle from sessionStorage, others stay placeholders", async () => {
+  test("refresh replay: the current round is restored with its revealed slots settled", async () => {
     await display.reload();
     await expect(display.getByRole("heading", { name: TITLE })).toBeVisible();
-    // Previously revealed slots render settled immediately (replay, no
-    // re-animation); unrevealed slots remain placeholders.
+    // The projector comes back on Round 1, not reset to the first round by
+    // accident — and previously revealed slots render settled immediately
+    // (replay, no re-animation).
+    await expect(display.getByRole("heading", { name: "Round 1" })).toBeVisible();
+    await expect(slots()).toHaveCount(2);
     await expect(slots().nth(0)).toContainText(round1Names[0]);
     await expect(slots().nth(1)).toContainText(round1Names[1]);
+    await expect(display.getByText("not yet drawn")).toHaveCount(0);
+  });
+
+  test("round hand-off: the display holds Round 1 until the admin finishes it", async () => {
+    // Advancing the ADMIN screen must not move the audience on by itself.
+    await admin.getByRole("button", { name: "Next round — Round 2" }).click();
+    await expect(display.getByRole("heading", { name: "Round 1" })).toBeVisible();
+    await expect(slots()).toHaveCount(2);
+
+    // The explicit finish control is what hands the display over.
+    await admin
+      .getByRole("button", { name: "Finish round — show Round 2" })
+      .click();
+    await expect(display.getByRole("heading", { name: "Round 2" })).toBeVisible();
+    await expect(display.getByRole("heading", { name: "Round 1" })).toHaveCount(0);
+    await expect(slots()).toHaveCount(3);
     await expect(display.getByText("not yet drawn")).toHaveCount(3);
+    await expect(display.getByText("Prize B")).toHaveCount(3);
   });
 
   test("simultaneous round: all 3 slots settle as one batch", async () => {
-    await admin.getByRole("button", { name: "Next round — Round 2" }).click();
     await admin
       .getByRole("button", { name: "Reveal round — Round 2 (3 slots)" })
       .click();
@@ -199,9 +219,10 @@ test.describe("two-tab sync (E3-02 Feature 3)", () => {
     round2Names = (await revealed.allInnerTexts()).map((s) => s.trim());
 
     // All three Round 2 slots settle on the names from A (slot order =
-    // reveal order), within the same single animation window.
+    // reveal order), within the same single animation window. The board shows
+    // Round 2 only, so these are slots 0..2.
     for (let i = 0; i < 3; i++) {
-      await expect(slots().nth(2 + i)).toContainText(round2Names[i], {
+      await expect(slots().nth(i)).toContainText(round2Names[i], {
         timeout: 15_000,
       });
     }
@@ -209,9 +230,10 @@ test.describe("two-tab sync (E3-02 Feature 3)", () => {
   });
 
   test("redraw isolation: only the affected slot changes on the display", async () => {
-    // Disqualify + redraw the Round 1 / slot 1 winner from tab A.
+    // Disqualify + redraw the first Round 2 winner from tab A — Round 2 is
+    // the round currently on the display.
     await admin.goto(`/raffles/${raffleId}/winners`);
-    const targetName = round1Names[0];
+    const targetName = round2Names[0];
     await changeWinnerStatus(admin, targetName, "Disqualify", DISQUALIFY_REASON);
 
     const before = await slotTexts();
@@ -240,7 +262,7 @@ test.describe("two-tab sync (E3-02 Feature 3)", () => {
 
     // Every sibling slot's text is byte-identical before vs after.
     const after = await slotTexts();
-    for (let j = 1; j < 5; j++) {
+    for (let j = 1; j < before.length; j++) {
       expect(after[j], `sibling slot ${j} must be untouched by the redraw`).toBe(
         before[j]
       );

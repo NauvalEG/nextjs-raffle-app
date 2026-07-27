@@ -3,10 +3,14 @@
 import * as React from "react";
 
 // Per-slot rendering for the public display board (E2-01 Features 2 and 5).
-// States: placeholder → scrambling (~500–800 ms) → settled; plus the
-// distinct pulsing "redrawing…" treatment confined to its own slot (BR1/BR2).
+// States: placeholder → scrambling → settled; plus the distinct pulsing
+// "redrawing…" treatment confined to its own slot (BR1/BR2).
 // No status, reason, or ticket data can be rendered here — the props carry
 // prize label and full name only (Feature 1 BR1).
+//
+// Visual treatment follows the approved projector mock: a white, heavily
+// rounded card floating over the full-bleed background image, winner name
+// first, then a small "Prize" caption and the prize label.
 
 export type SlotState =
   | { kind: "scrambling"; fullName: string }
@@ -14,20 +18,41 @@ export type SlotState =
   | { kind: "redrawing" };
 // Absent state = "not yet drawn" placeholder.
 
-// Fixed duration inside the FSD's ~500–800 ms band (Feature 2 BR4). A single
+// Reveal animation runs for a full 5 s by explicit product direction, which
+// supersedes the ~500–800 ms band in FSD E2-01 Feature 2 BR4. A single
 // constant guarantees a simultaneous batch animates and settles together in
 // one window rather than staggering.
-const SCRAMBLE_MS = 650;
+const SCRAMBLE_MS = 5000;
+// Characters lock in left-to-right over the tail of the window so five
+// seconds resolves into the name instead of flickering flat until it snaps.
+const LOCK_IN_START_MS = 3800;
 const SCRAMBLE_FRAME_MS = 50;
-const SCRAMBLE_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ ";
+const SCRAMBLE_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
 // Math.random is PERMITTED here: the scramble is purely cosmetic presentation
 // and sits outside all draw paths — the fair random pick already happened
 // server-side with crypto.getRandomValues (E1-04). See FSD E2-01 Feature 2 BR3.
-function randomScramble(length: number): string {
-  let out = "";
-  for (let i = 0; i < length; i++) {
-    out += SCRAMBLE_CHARS[Math.floor(Math.random() * SCRAMBLE_CHARS.length)];
+function randomChar(): string {
+  return SCRAMBLE_CHARS[Math.floor(Math.random() * SCRAMBLE_CHARS.length)];
+}
+
+/** How many leading characters have locked in at `elapsed` ms. */
+function lockedCount(length: number, elapsed: number): number {
+  if (elapsed <= LOCK_IN_START_MS) return 0;
+  const progress =
+    (elapsed - LOCK_IN_START_MS) / (SCRAMBLE_MS - LOCK_IN_START_MS);
+  return Math.min(length, Math.ceil(progress * length));
+}
+
+/**
+ * Renders the target with the first `locked` characters revealed and the rest
+ * randomised. Whitespace is never scrambled, so the name keeps its word shape
+ * and line wrapping stays stable for the whole 5 s.
+ */
+function scrambleFrom(target: string, locked: number): string {
+  let out = target.slice(0, locked);
+  for (let i = locked; i < target.length; i++) {
+    out += /\s/.test(target[i]) ? target[i] : randomChar();
   }
   return out;
 }
@@ -39,7 +64,7 @@ function ScrambledName({
   target: string;
   onSettle: () => void;
 }) {
-  const [text, setText] = React.useState(() => randomScramble(target.length));
+  const [text, setText] = React.useState(() => scrambleFrom(target, 0));
   // Keep the latest settle callback without restarting the animation when the
   // parent re-renders mid-scramble.
   const onSettleRef = React.useRef(onSettle);
@@ -48,9 +73,10 @@ function ScrambledName({
   });
 
   React.useEffect(() => {
-    // Regenerate same-length random characters each frame, then settle.
+    let elapsed = 0;
     const interval = setInterval(() => {
-      setText(randomScramble(target.length));
+      elapsed += SCRAMBLE_FRAME_MS;
+      setText(scrambleFrom(target, lockedCount(target.length, elapsed)));
     }, SCRAMBLE_FRAME_MS);
     const timer = setTimeout(() => {
       clearInterval(interval);
@@ -69,38 +95,56 @@ export function DisplaySlot({
   prizeLabel,
   state,
   onSettle,
+  className = "",
+  style,
 }: {
   prizeLabel: string;
   state: SlotState | undefined;
   onSettle: () => void;
+  /** Layout-only classes from the board. */
+  className?: string;
+  /** Layout-only grid placement from the board. */
+  style?: React.CSSProperties;
 }) {
+  const drawn = state !== undefined && state.kind !== "redrawing";
+
   return (
     <div
+      data-slot="display-slot"
+      style={style}
       className={
-        "flex min-h-32 flex-col justify-between rounded-xl border p-5 " +
-        (state?.kind === "redrawing"
-          ? "border-neutral-500 bg-neutral-900"
-          : "border-neutral-800 bg-neutral-900/60")
+        // @container + cqi-based type: the card scales to ITS OWN width, not
+        // the viewport's, so a 3-across or 4-across block stays readable
+        // without breakpoint guesswork.
+        "@container flex flex-col items-center justify-center " +
+        "rounded-[2.5rem] px-[8%] py-7 text-center shadow-2xl shadow-black/30 " +
+        "transition-colors duration-300 " +
+        (drawn ? "bg-white" : "bg-white/75 backdrop-blur-sm") +
+        (className ? ` ${className}` : "")
       }
     >
-      <p className="text-sm font-medium tracking-widest text-neutral-400 uppercase">
-        {prizeLabel}
-      </p>
-      <p className="mt-3 text-2xl leading-tight font-semibold break-words lg:text-3xl">
+      <p className="text-[clamp(1.5rem,9cqi,2.5rem)] leading-tight font-bold tracking-tight text-balance break-words text-neutral-950">
         {state === undefined ? (
-          <span className="text-lg font-normal text-neutral-500 lg:text-xl">
+          <span className="text-[clamp(1rem,5cqi,1.5rem)] font-normal text-neutral-500">
             not yet drawn
           </span>
         ) : state.kind === "redrawing" ? (
           // Distinct pulsing treatment; no reason/status language (BR3).
-          <span className="animate-pulse text-lg font-normal text-neutral-300 lg:text-xl">
+          <span className="animate-pulse text-[clamp(1rem,5cqi,1.5rem)] font-normal text-neutral-600">
             Redrawing…
           </span>
         ) : state.kind === "scrambling" ? (
           <ScrambledName target={state.fullName} onSettle={onSettle} />
         ) : (
-          <span className="text-neutral-50">{state.fullName}</span>
+          <span>{state.fullName}</span>
         )}
+      </p>
+
+      <p className="mt-4 text-[clamp(0.8rem,2.6cqi,1rem)] font-normal text-neutral-700">
+        Prize
+      </p>
+      <p className="text-[clamp(1rem,4.4cqi,1.35rem)] leading-snug font-bold text-balance break-words text-neutral-950">
+        {prizeLabel}
       </p>
     </div>
   );

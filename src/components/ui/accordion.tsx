@@ -66,9 +66,16 @@ function AccordionContent({
       className="overflow-hidden text-sm data-open:animate-accordion-down data-closed:animate-accordion-up"
       {...props}
     >
+      {/*
+        No fixed height here. --radix-accordion-content-height is measured once
+        when the item opens and is never updated, so pinning the wrapper to it
+        clips any content added while the item is already open (e.g. a new
+        allocation row). The open/close keyframes on the Content above still
+        use the variable — that is the only thing it is meant for.
+      */}
       <div
         className={cn(
-          "h-(--radix-accordion-content-height) pt-0 pb-2.5 [&_a]:underline [&_a]:underline-offset-3 [&_a]:hover:text-foreground [&_p:not(:last-child)]:mb-4",
+          "pt-0 pb-2.5 [&_a]:underline [&_a]:underline-offset-3 [&_a]:hover:text-foreground [&_p:not(:last-child)]:mb-4",
           className
         )}
       >
