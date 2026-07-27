@@ -82,3 +82,24 @@ export function emitReveal(slot: RevealedSlot): void {
   };
   channel?.postMessage(message);
 }
+
+/**
+ * Isolates one slot as "redrawing…" on the display. The ONE permitted
+ * pre-commit message (E2-01 Feature 3 BR1): posted before the redraw Server
+ * Action is awaited, and carrying no entrant data. On failure nothing further
+ * is posted — there is no redraw-cancel (D-E13); the slot holds until a
+ * retried redraw resolves it.
+ */
+export function emitRedrawStart(slotId: string): void {
+  const message: DisplayMessage = { type: "redraw-start", slotId };
+  channel?.postMessage(message);
+}
+
+/**
+ * Settles a redrawn slot on the display with its replacement winner. Post-
+ * commit only: callers guarantee the redraw Server Action returned success.
+ */
+export function emitRedrawResult(slotId: string, fullName: string): void {
+  const message: DisplayMessage = { type: "redraw-result", slotId, fullName };
+  channel?.postMessage(message);
+}

@@ -30,6 +30,7 @@ import type { DrawScreenRound, DrawScreenSlot, DrawScreenState } from "@/actions
 import { emitReveal, emitSetRound, initRevealChannel } from "./reveal-bus";
 import { DisplayControl } from "./display-control";
 import { HistoryPanel } from "./history-panel";
+import { LiveRedrawDialog } from "./live-redraw-dialog";
 
 // Draw screen client flow (E1-04 Features 4.3–4.5).
 //
@@ -60,6 +61,11 @@ export function DrawScreen({ state }: { state: DrawScreenState }) {
   const revealedRef = React.useRef<Record<string, number>>({});
   const [confirmOpen, setConfirmOpen] = React.useState(false);
   const [pending, startTransition] = React.useTransition();
+  // Slot the operator is redrawing live (null = dialog closed). Only ALREADY
+  // REVEALED slots of the round on screen can be targeted: a redraw is a
+  // visible correction of something the room has just seen, and redrawing an
+  // unrevealed slot would leak "something happened here" to the display.
+  const [redrawTarget, setRedrawTarget] = React.useState<DrawScreenSlot | null>(null);
 
   // The round the PUBLIC DISPLAY is showing. Deliberately separate from
   // currentRoundId: the operator can read ahead on the admin screen while the
@@ -221,6 +227,55 @@ export function DrawScreen({ state }: { state: DrawScreenState }) {
     });
   }
 
+  // --- Live redraw ---------------------------------------------------------
+  //
+  // Redraw is the operator's mid-show correction for a winner who is absent or
+  // declines: the slot's replacement lands on the projector within seconds
+  // (redraw-start → redraw-result, emitted by LiveRedrawDialog). The replaced
+  // entrant is released back to the pool, so they stay in the running for
+  // later rounds. Disqualifying and the rest of winner management stay on the
+  // Winners tab, after the show.
+  //
+  // COMPLETED freezes every winner record (D-E18), so the control disappears.
+  const liveRedrawAllowed = state.status === "LOCKED" || state.status === "DRAWN";
+
+  /** Swap a redrawn slot in place — same slot identity, new winner. */
+  function handleRedrawn(replacement: DrawScreenSlot) {
+    const round = rounds.find((r) =>
+      r.slots.some((s) => s.slotId === replacement.slotId)
+    );
+    if (!round) return;
+    const base = sessionSlots[round.id] ?? round.slots;
+    // Adopting a server-drawn round into session state resets its reveal
+    // counter, so pin it at "fully revealed" first — the audience has already
+    // seen those slots and must not be replayed.
+    if (sessionSlots[round.id] === undefined) {
+      revealedRef.current[round.id] = base.length;
+      setRevealedCount((prev) => ({ ...prev, [round.id]: base.length }));
+    }
+    setSessionSlots((prev) => ({
+      ...prev,
+      [round.id]: base.map((s) =>
+        s.slotId === replacement.slotId ? replacement : s
+      ),
+    }));
+  }
+
+  /** The Redraw control for one already-revealed slot. */
+  function redrawButton(slot: DrawScreenSlot, size: "sm" | "default" = "sm") {
+    if (!liveRedrawAllowed) return null;
+    return (
+      <Button
+        variant="outline"
+        size={size}
+        onClick={() => setRedrawTarget(slot)}
+        aria-label={`Redraw ${slot.prizeLabel} slot ${slot.sequenceInAllocation}`}
+      >
+        Redraw
+      </Button>
+    );
+  }
+
   // "Round {r} of {R} — {prize label} {k} of {n}" (FSD 4.5 Rule / AC).
   function progressText(): string | null {
     if (!current) return null;
@@ -329,11 +384,19 @@ export function DrawScreen({ state }: { state: DrawScreenState }) {
                       current.revealMode === "SIMULTANEOUS" ? (
                         <ul className="grid gap-2 sm:grid-cols-2">
                           {current.slots.map((slot) => (
-                            <li key={slot.slotId} className="rounded-lg border p-3">
-                              <p className="font-medium">{slot.winner.fullName}</p>
-                              <p className="text-muted-foreground text-sm">
-                                Ticket #{slot.winner.ticketNumber} — {slot.prizeLabel}
-                              </p>
+                            <li
+                              key={slot.slotId}
+                              className="flex items-center justify-between gap-3 rounded-lg border p-3"
+                            >
+                              <div className="min-w-0">
+                                <p className="truncate font-medium">
+                                  {slot.winner.fullName}
+                                </p>
+                                <p className="text-muted-foreground text-sm">
+                                  Ticket #{slot.winner.ticketNumber} — {slot.prizeLabel}
+                                </p>
+                              </div>
+                              {redrawButton(slot)}
                             </li>
                           ))}
                         </ul>
@@ -349,13 +412,24 @@ export function DrawScreen({ state }: { state: DrawScreenState }) {
                             <p className="text-muted-foreground mt-1 text-sm">
                               Ticket #{current.slots[currentRevealed - 1].winner.ticketNumber}
                             </p>
+                            {liveRedrawAllowed && (
+                              <div className="mt-4 flex justify-center">
+                                {redrawButton(current.slots[currentRevealed - 1], "default")}
+                              </div>
+                            )}
                           </div>
                           {currentRevealed > 1 && (
                             <ul className="space-y-1">
                               {current.slots.slice(0, currentRevealed - 1).map((slot) => (
-                                <li key={slot.slotId} className="text-muted-foreground text-sm">
-                                  {slot.winner.fullName} — #{slot.winner.ticketNumber} —{" "}
-                                  {slot.prizeLabel}
+                                <li
+                                  key={slot.slotId}
+                                  className="text-muted-foreground flex items-center justify-between gap-3 text-sm"
+                                >
+                                  <span className="min-w-0 truncate">
+                                    {slot.winner.fullName} — #{slot.winner.ticketNumber} —{" "}
+                                    {slot.prizeLabel}
+                                  </span>
+                                  {redrawButton(slot)}
                                 </li>
                               ))}
                             </ul>
@@ -438,8 +512,26 @@ export function DrawScreen({ state }: { state: DrawScreenState }) {
           )}
         </div>
 
-        <HistoryPanel rounds={history} />
+        {/*
+          Drawn rounds keep their redraw control: the round just revealed moves
+          here as soon as the operator advances, and once every round is drawn
+          this panel is the only place the slots are listed.
+        */}
+        <HistoryPanel rounds={history} renderSlotAction={(slot) => redrawButton(slot)} />
       </div>
+
+      <LiveRedrawDialog
+        slot={redrawTarget}
+        roundLabel={
+          redrawTarget
+            ? (rounds.find((r) =>
+                r.slots.some((s) => s.slotId === redrawTarget.slotId)
+              )?.label ?? "")
+            : ""
+        }
+        onOpenChange={(open) => !open && setRedrawTarget(null)}
+        onRedrawn={handleRedrawn}
+      />
 
       {current && (
         <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>

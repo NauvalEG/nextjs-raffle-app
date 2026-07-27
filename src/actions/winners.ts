@@ -5,9 +5,8 @@ import type { DrawEventStatus, RaffleStatus } from "@prisma/client";
 
 import { db } from "@/lib/db";
 import { requireSession } from "@/lib/session";
-import { getEligiblePool } from "@/lib/pool";
-import { secureRandomIndex } from "@/lib/random";
 import { writeAudit } from "@/lib/audit";
+import { applyRedraw, EmptyPoolError, RedrawStaleError } from "@/lib/redraw";
 import { statusChangeSchema, redrawSchema } from "@/lib/validation";
 import { slotId } from "@/lib/broadcast";
 import { type ActionResult, ok, fail } from "@/lib/action-result";
@@ -23,9 +22,13 @@ import { type ActionResult, ok, fail } from "@/lib/action-result";
 // Raffle gate (D-E18): status changes and redraws are permitted while the
 // raffle is DRAWN and frozen at COMPLETED.
 //
-// Redraw reuses E1-04's foundations verbatim: getEligiblePool (D-E01
-// semantics, recomputed live inside the transaction) and secureRandomIndex
-// (crypto.getRandomValues — the ONLY randomness source in any redraw path).
+// Redraw reuses E1-04's foundations verbatim through the shared transaction
+// body in src/lib/redraw.ts: getEligiblePool (D-E01 semantics, recomputed
+// live inside the transaction) and secureRandomIndex (crypto.getRandomValues
+// — the ONLY randomness source in any redraw path). The draw screen's LIVE
+// redraw (redrawLiveSlot, src/actions/draw.ts) shares that same body; only
+// the eligibility gate differs (PENDING while the show is running, vs the
+// terminal statuses here).
 
 // ---------- Exact user-facing strings (FSD E2-02 §4.2/4.3 Error States) ----------
 
@@ -45,9 +48,8 @@ const RAFFLE_FROZEN =
 const RAFFLE_NOT_DRAWN =
   "Winner statuses can be changed once the raffle has been drawn.";
 
-/** Internal sentinels for in-transaction guards. */
+/** Internal sentinel for the status-change in-transaction guard. */
 class StaleError extends Error {}
-class EmptyPoolError extends Error {}
 
 // ---------- Winners screen state (consumed by the winners page; the audit
 // ---------- shapes here are also what E3-01's exports will read) ----------
@@ -375,61 +377,15 @@ export async function redrawSlot(
   }
 
   try {
-    const result = await db.$transaction(async (tx) => {
-      // Pool recomputed LIVE inside the transaction via THE shared pool
-      // function (D-E01 semantics) — never cached. Reads only; an empty pool
-      // aborts with zero writes.
-      const pool = await getEligiblePool(tx, raffleId);
-      if (pool.length === 0) throw new EmptyPoolError();
-
-      // THE shared randomness source — crypto.getRandomValues only.
-      const pick = pool[secureRandomIndex(pool.length)];
-
-      // ONE transaction, exactly three writes:
-      // (a) replacement event — same slot identity, fresh PENDING status.
-      const replacement = await tx.drawEvent.create({
-        data: {
-          roundAllocationId: original.roundAllocationId,
-          sequenceInAllocation: original.sequenceInAllocation,
-          winnerEntryId: pick.id,
-          status: "PENDING",
-        },
-        select: { id: true },
-      });
-
-      // (b) supersession pointer — the ONLY field ever written on the
-      // original. The conditional update re-checks the FRESH persisted state
-      // (still eligible, not already superseded); a concurrent change rolls
-      // the whole transaction back, orphaning nothing.
-      const superseded = await tx.drawEvent.updateMany({
-        where: {
-          id: original.id,
-          supersededById: null,
-          status: { in: ["DISQUALIFIED", "RELEASED_TO_POOL"] },
-        },
-        data: { supersededById: replacement.id },
-      });
-      if (superseded.count !== 1) throw new StaleError();
-
-      // (c) one audit entry capturing the supersession linkage and both
-      // winners — the chain is reconstructible from the log alone (E3-01).
-      await writeAudit(tx, {
+    // ONE transaction, exactly three writes — THE shared redraw body.
+    const result = await db.$transaction(async (tx) =>
+      applyRedraw(tx, {
         raffleId,
-        entityType: "draw_event",
-        entityId: replacement.id,
-        drawEventId: replacement.id,
-        action: "redraw",
-        oldValue: {
-          supersededFrom: original.id,
-          previousWinner: original.winnerEntryId,
-        },
-        newValue: { winnerEntryId: pick.id },
+        original,
+        eligibleStatuses: ["DISQUALIFIED", "RELEASED_TO_POOL"],
         reason,
-        actor: "admin",
-      });
-
-      return { replacementId: replacement.id, pick };
-    });
+      })
+    );
 
     revalidatePath(`/raffles/${raffleId}/winners`);
     return ok({
@@ -443,7 +399,7 @@ export async function redrawSlot(
     });
   } catch (error) {
     if (error instanceof EmptyPoolError) return fail(POOL_EMPTY);
-    if (error instanceof StaleError) {
+    if (error instanceof RedrawStaleError) {
       // Concurrent state change (FSD 4.3 Alt 3): report the persisted reality.
       const fresh = await db.drawEvent.findUnique({
         where: { id: drawEventId },

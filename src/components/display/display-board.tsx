@@ -57,7 +57,7 @@ const BACKGROUND_URL = "/BG_Undian.jpeg";
 // the gap has hit COLUMN_GAP_MIN_REM. The consequence is that a very wide
 // screen leaves margins either side of the centred block — that is the
 // centre-anchored look, not wasted space.
-const CARD_TARGET_REM = 36;
+const CARD_TARGET_REM = 72;
 const COLUMN_GAP_MAX_REM = 7;
 const COLUMN_GAP_MIN_REM = 2.5; // still a comfortable gutter, not a hairline
 const MAX_COLUMNS = 4; // beyond this the cards get too small to read from a room
@@ -191,10 +191,17 @@ export function DisplayBoard({ raffleId }: { raffleId: string }) {
           // ONLY the addressed slot changes (Feature 5 BR1); unknown slotId
           // dropped; redraw-start is never logged (pre-commit, no name).
           if (!knownSlotsRef.current.has(msg.slotId)) return;
-          setSlotStates((prev) => ({
-            ...prev,
-            [msg.slotId]: { kind: "redrawing" },
-          }));
+          setSlotStates((prev) => {
+            const current = prev[msg.slotId];
+            // Carry only the WIDTH of the outgoing name into the redraw
+            // scramble so the card does not jump; the name itself is dropped
+            // the instant redraw-start lands.
+            const length =
+              current && current.kind !== "redrawing"
+                ? current.fullName.length
+                : current?.length;
+            return { ...prev, [msg.slotId]: { kind: "redrawing", length } };
+          });
           return;
         }
         case "redraw-result": {

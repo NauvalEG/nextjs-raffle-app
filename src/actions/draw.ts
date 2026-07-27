@@ -9,6 +9,8 @@ import { getEligiblePool, type PoolEntry } from "@/lib/pool";
 import { secureRandomIndex } from "@/lib/random";
 import { writeAudit } from "@/lib/audit";
 import { isLegalTransition } from "@/lib/lifecycle";
+import { applyRedraw, EmptyPoolError, RedrawStaleError } from "@/lib/redraw";
+import { redrawSchema } from "@/lib/validation";
 import { slotId } from "@/lib/broadcast";
 import { type ActionResult, ok, fail } from "@/lib/action-result";
 
@@ -277,6 +279,138 @@ export async function executeRound(
   }
 }
 
+// ---------- Live redraw (draw screen, mid-show) ----------
+//
+// Same three writes as the winners-screen redraw (E2-02 Feature 4.3) through
+// the shared body in src/lib/redraw.ts — same live pool (D-E01), same
+// randomness source, same supersession pointer, same single audit entry.
+//
+// Only the eligibility gate differs, and deliberately so:
+//   - winners screen: raffle DRAWN, slot DISQUALIFIED or RELEASED_TO_POOL
+//     (D-E11 — a status change is the deliberate first step, after the show),
+//   - here: raffle LOCKED or DRAWN, slot PENDING — the operator is running
+//     the room and the named winner is absent/declines on the spot, so the
+//     redraw must land on the projector within seconds. The original is
+//     superseded AND released: it moves to RELEASED_TO_POOL, so that entrant
+//     re-enters the eligible pool (D-E01: released events do not exclude) and
+//     can win a later round or a later redraw. They are not disqualified —
+//     missing one call is not a permanent exclusion.
+//     The replacement is picked from the pool as it stood BEFORE that release
+//     (see lib/redraw.ts), so nobody is ever handed their own slot back.
+// COMPLETED stays frozen (D-E18). Superseded records stay untouchable.
+
+export type LiveRedrawInput = {
+  drawEventId: string;
+  reason: string;
+};
+
+export type LiveRedrawResult = {
+  /** Slot identity for the BroadcastChannel (broadcast.ts slotId helper). */
+  slotId: string;
+  roundId: string;
+  prizeLabel: string;
+  replacement: {
+    drawEventId: string;
+    fullName: string;
+    ticketNumber: string;
+  };
+};
+
+const LIVE_REDRAW_INELIGIBLE =
+  "Only a pending winner can be redrawn during the draw. Manage this slot from the Winners tab.";
+const LIVE_REDRAW_SUPERSEDED =
+  "This record has been superseded by a redraw and can no longer be changed.";
+const LIVE_REDRAW_FROZEN =
+  "This raffle has been completed. Winner records are frozen and can no longer be changed.";
+const LIVE_REDRAW_NOT_DRAWN =
+  "This slot can only be redrawn once its round has been drawn.";
+const LIVE_REDRAW_POOL_EMPTY = "No eligible entrants remain for a redraw.";
+const LIVE_REDRAW_TX_FAILED =
+  "The redraw could not be completed. No changes were made. Please retry.";
+
+export async function redrawLiveSlot(
+  input: LiveRedrawInput
+): Promise<ActionResult<LiveRedrawResult>> {
+  await requireSession();
+
+  const parsed = redrawSchema.safeParse(input);
+  if (!parsed.success) {
+    return fail(
+      parsed.error.issues[0]?.message ?? "A reason is required for every status change."
+    );
+  }
+  const { drawEventId, reason } = parsed.data;
+
+  const original = await db.drawEvent.findUnique({
+    where: { id: drawEventId },
+    select: {
+      id: true,
+      status: true,
+      supersededById: true,
+      winnerEntryId: true,
+      roundAllocationId: true,
+      sequenceInAllocation: true,
+      roundAllocation: {
+        select: {
+          prizeType: { select: { name: true } },
+          round: {
+            select: { id: true, raffleId: true, raffle: { select: { status: true } } },
+          },
+        },
+      },
+    },
+  });
+  if (!original) return fail(LIVE_REDRAW_INELIGIBLE);
+
+  const round = original.roundAllocation.round;
+  const raffleStatus = round.raffle.status;
+  if (raffleStatus !== "LOCKED" && raffleStatus !== "DRAWN") {
+    return fail(raffleStatus === "COMPLETED" ? LIVE_REDRAW_FROZEN : LIVE_REDRAW_NOT_DRAWN);
+  }
+  if (original.supersededById !== null) return fail(LIVE_REDRAW_SUPERSEDED);
+  // Defense in depth: the persisted status must be redraw-eligible regardless
+  // of what the draw screen rendered.
+  if (original.status !== "PENDING") return fail(LIVE_REDRAW_INELIGIBLE);
+
+  try {
+    const result = await db.$transaction(async (tx) =>
+      applyRedraw(tx, {
+        raffleId: round.raffleId,
+        original,
+        eligibleStatuses: ["PENDING"],
+        reason,
+        releaseOriginal: true,
+      })
+    );
+
+    revalidatePath(`/raffles/${round.raffleId}/draw`);
+    revalidatePath(`/raffles/${round.raffleId}/winners`);
+    return ok({
+      slotId: slotId(original.roundAllocationId, original.sequenceInAllocation),
+      roundId: round.id,
+      prizeLabel: original.roundAllocation.prizeType.name,
+      replacement: {
+        drawEventId: result.replacementId,
+        fullName: result.pick.fullName,
+        ticketNumber: result.pick.ticketNumber,
+      },
+    });
+  } catch (error) {
+    if (error instanceof EmptyPoolError) return fail(LIVE_REDRAW_POOL_EMPTY);
+    if (error instanceof RedrawStaleError) {
+      // Concurrent change: report the persisted reality.
+      const fresh = await db.drawEvent.findUnique({
+        where: { id: drawEventId },
+        select: { status: true, supersededById: true },
+      });
+      if (fresh?.supersededById) return fail(LIVE_REDRAW_SUPERSEDED);
+      if (fresh && fresh.status !== "PENDING") return fail(LIVE_REDRAW_INELIGIBLE);
+      return fail(LIVE_REDRAW_TX_FAILED);
+    }
+    return fail(LIVE_REDRAW_TX_FAILED);
+  }
+}
+
 // ---------- Draw screen state (server-side query helper for the page) ----------
 
 export async function getDrawScreenState(
@@ -303,6 +437,11 @@ export async function getDrawScreenState(
               quantity: true,
               prizeType: { select: { name: true } },
               drawEvents: {
+                // One row per slot: superseded events are the redraw history,
+                // never the slot's current winner (same rule as the winners
+                // screen). Without this a live redraw would render its slot
+                // twice after a refresh.
+                where: { supersededById: null },
                 orderBy: { sequenceInAllocation: "asc" },
                 select: {
                   id: true,

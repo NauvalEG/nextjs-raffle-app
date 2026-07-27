@@ -15,7 +15,13 @@ import * as React from "react";
 export type SlotState =
   | { kind: "scrambling"; fullName: string }
   | { kind: "settled"; fullName: string }
-  | { kind: "redrawing" };
+  /**
+   * Redraw in flight. `length` is the character count of the name being
+   * replaced, used only to keep the scramble the same width as what the room
+   * was just looking at — the name itself is gone from the slot the instant
+   * redraw-start lands.
+   */
+  | { kind: "redrawing"; length?: number };
 // Absent state = "not yet drawn" placeholder.
 
 // Reveal animation runs for a full 5 s by explicit product direction, which
@@ -91,6 +97,27 @@ function ScrambledName({
   return <span className="whitespace-pre-wrap">{text}</span>;
 }
 
+/**
+ * Open-ended scramble for a slot whose redraw is still in flight: the same
+ * character churn as a reveal, but with no target and no settle — it runs
+ * until redraw-result arrives and the slot switches to the real 5 s reveal
+ * animation. A redraw therefore reads as one continuous scramble that
+ * resolves into the replacement name.
+ */
+function ScramblingPlaceholder({ length }: { length: number }) {
+  const width = Math.min(Math.max(length, 6), 24);
+  const [text, setText] = React.useState(() => scrambleFrom("x".repeat(width), 0));
+
+  React.useEffect(() => {
+    const interval = setInterval(() => {
+      setText(scrambleFrom("x".repeat(width), 0));
+    }, SCRAMBLE_FRAME_MS);
+    return () => clearInterval(interval);
+  }, [width]);
+
+  return <span className="whitespace-pre-wrap">{text}</span>;
+}
+
 export function DisplaySlot({
   prizeLabel,
   state,
@@ -106,7 +133,9 @@ export function DisplaySlot({
   /** Layout-only grid placement from the board. */
   style?: React.CSSProperties;
 }) {
-  const drawn = state !== undefined && state.kind !== "redrawing";
+  // A redrawing slot is actively animating, so it keeps the solid card
+  // treatment — only a slot with no result at all stays translucent.
+  const drawn = state !== undefined;
 
   return (
     <div
@@ -131,16 +160,22 @@ export function DisplaySlot({
             not yet drawn
           </span>
         ) : state.kind === "redrawing" ? (
-          // Distinct pulsing treatment; no reason/status language (BR3).
-          <span className="animate-pulse text-[clamp(1rem,6cqi,2.5rem)] font-normal text-neutral-600">
-            Redrawing…
-          </span>
+          <ScramblingPlaceholder length={state.length ?? 12} />
         ) : state.kind === "scrambling" ? (
           <ScrambledName target={state.fullName} onSettle={onSettle} />
         ) : (
           <span>{state.fullName}</span>
         )}
       </p>
+
+      {state?.kind === "redrawing" && (
+        // The scramble above says "something is happening"; this caption says
+        // WHAT, and keeps the slot's distinct redraw treatment (BR1/BR2). No
+        // reason or status language (BR3).
+        <p className="animate-pulse text-[clamp(0.75rem,3.4cqi,1.6rem)] font-normal text-neutral-600">
+          Redrawing…
+        </p>
+      )}
 
       <p className="mt-[4%] text-[clamp(0.75rem,3.2cqi,1.5rem)] font-normal tracking-[0.12em] text-neutral-700 uppercase">
         Prize
