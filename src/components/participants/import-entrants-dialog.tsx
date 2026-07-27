@@ -70,8 +70,8 @@ export function ImportEntrantsDialog({
   raffleId: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Ticket numbers of the raffle's current entrants (preview courtesy check). */
-  existingTickets: number[];
+  /** Ticket/IDs of the raffle's current entrants (preview courtesy check). */
+  existingTickets: string[];
 }) {
   const router = useRouter();
   const fileInputRef = React.useRef<HTMLInputElement>(null);
@@ -207,7 +207,7 @@ export function ImportEntrantsDialog({
         const serverReason = serverErrors.get(r.lineNumber);
         return {
           lineNumber: r.lineNumber,
-          ticket: String(r.ticketNumber),
+          ticket: r.ticketNumber,
           name: r.fullName,
           contact: r.contact ?? "",
           reason: serverReason ?? null,
@@ -301,7 +301,7 @@ export function ImportEntrantsDialog({
                 <Textarea
                   value={pasteText}
                   onChange={(e) => setPasteText(e.target.value)}
-                  placeholder={"ticket,name,contact\n1,Ana Souza,ana@example.com"}
+                  placeholder={"ticket,name,contact\nA-1024,Ana Souza,ana@example.com"}
                   className="min-h-40 font-mono text-sm"
                 />
                 <div className="flex justify-end">
@@ -424,7 +424,7 @@ export function ImportEntrantsDialog({
                 <TableHeader>
                   <TableRow>
                     <TableHead className="w-16">Line</TableHead>
-                    <TableHead className="w-24">Ticket #</TableHead>
+                    <TableHead className="w-24">Ticket/ID</TableHead>
                     <TableHead>Full name</TableHead>
                     {contactIdx !== null && <TableHead>Contact</TableHead>}
                     <TableHead>Status</TableHead>

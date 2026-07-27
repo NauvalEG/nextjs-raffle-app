@@ -45,7 +45,7 @@ const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
 //      (B now has TWO chronological outcomes: released, then pending)
 //   4. release RA -> L's latest status is RELEASED_TO_POOL
 let seed: SeedResult;
-let ticketOf: Map<string, number>; // entryId -> ticketNumber
+let ticketOf: Map<string, string>; // entryId -> ticketNumber
 let aId: string, bId: string, cId: string, lId: string; // entry ids
 
 beforeAll(async () => {
@@ -147,7 +147,7 @@ describe("getResultsExportRows", () => {
     expect(rows.map((r) => r[0])).toEqual(["1", "2", "3", "4"]);
 
     const rowOf = (entryId: string) =>
-      rows.find((r) => r[0] === String(ticketOf.get(entryId)))!;
+      rows.find((r) => r[0] === ticketOf.get(entryId))!;
 
     // Superseded original shows "disqualified" (B-12) ...
     expect(rowOf(aId).slice(3)).toEqual(["Round 1", "Gold", "disqualified"]);

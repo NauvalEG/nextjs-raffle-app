@@ -186,7 +186,7 @@ describe("post-lock structural immutability (epic AC4)", () => {
     ).toBe("This raffle is locked. Rounds and allocations can no longer be changed.");
 
     expect(
-      expectFail(await addEntrant(seed.raffleId, { ticketNumber: 99, fullName: "Late" }))
+      expectFail(await addEntrant(seed.raffleId, { ticketNumber: "99", fullName: "Late" }))
     ).toBe("This raffle is locked. Entrants can no longer be added.");
 
     expect(expectFail(await removeEntrant(seed.entries[0].id))).toBe(

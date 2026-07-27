@@ -17,7 +17,7 @@ export type DbClient = PrismaClient | Prisma.TransactionClient;
 
 export type PoolEntry = {
   id: string;
-  ticketNumber: number;
+  ticketNumber: string;
   fullName: string;
 };
 

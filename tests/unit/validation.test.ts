@@ -131,27 +131,66 @@ describe("allocationSchema", () => {
 });
 
 describe("entrantSchema", () => {
-  const valid = { ticketNumber: 1, fullName: "Alice" };
+  const valid = { ticketNumber: "1", fullName: "Alice" };
 
-  it("accepts a valid entrant and trims fullName/contact", () => {
+  it("accepts a valid entrant and trims ticketNumber/fullName/contact", () => {
     const parsed = entrantSchema.parse({
-      ticketNumber: 7,
+      ticketNumber: "  A-1024  ",
       fullName: "  Alice  ",
       contact: "  a@x.com  ",
     });
-    expect(parsed).toEqual({ ticketNumber: 7, fullName: "Alice", contact: "a@x.com" });
+    expect(parsed).toEqual({
+      ticketNumber: "A-1024",
+      fullName: "Alice",
+      contact: "a@x.com",
+    });
   });
 
-  it('rejects non-positive and fractional tickets with "Ticket must be a whole number"', () => {
-    for (const t of [0, -5, 1.5]) {
+  it("accepts free-form ticket/IDs — letters, punctuation, leading zeros (D-E29)", () => {
+    for (const t of ["A-1024", "EMP_0092", "7f3c9b", "abc", "0", "007", "#12/A", "a b"]) {
       expect(
-        firstMessage(entrantSchema.safeParse({ ...valid, ticketNumber: t })),
+        entrantSchema.safeParse({ ...valid, ticketNumber: t }).success,
         `ticketNumber=${t}`
-      ).toBe("Ticket must be a whole number");
+      ).toBe(true);
     }
+  });
+
+  it("rejects an empty/whitespace-only ticket with the exact message", () => {
+    for (const t of ["", "   "]) {
+      expect(firstMessage(entrantSchema.safeParse({ ...valid, ticketNumber: t }))).toBe(
+        "Ticket/ID is required."
+      );
+    }
+    expect(firstMessage(entrantSchema.safeParse({ fullName: "Alice" }))).toBe(
+      "Ticket/ID is required."
+    );
+  });
+
+  it("caps the ticket at 64 characters with the exact message", () => {
     expect(
-      firstMessage(entrantSchema.safeParse({ ...valid, ticketNumber: "3" }))
-    ).toBe("Ticket must be a whole number");
+      entrantSchema.safeParse({ ...valid, ticketNumber: "t".repeat(64) }).success
+    ).toBe(true);
+    expect(
+      firstMessage(entrantSchema.safeParse({ ...valid, ticketNumber: "t".repeat(65) }))
+    ).toBe("Ticket/ID must be 64 characters or fewer.");
+  });
+
+  it("rejects control characters in the ticket with the exact message", () => {
+    for (const code of [0x01, 0x09, 0x1f, 0x7f, 0x9f]) {
+      expect(
+        firstMessage(
+          entrantSchema.safeParse({
+            ...valid,
+            ticketNumber: `A${String.fromCharCode(code)}B`,
+          })
+        ),
+        `code=${code}`
+      ).toBe("Ticket/ID contains invalid characters.");
+    }
+  });
+
+  it("rejects a non-string ticket", () => {
+    expect(entrantSchema.safeParse({ ...valid, ticketNumber: 3 }).success).toBe(false);
   });
 
   it("requires fullName and caps it at 200 chars", () => {

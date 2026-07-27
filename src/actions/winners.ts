@@ -71,7 +71,7 @@ export type WinnerChainEvent = {
   drawEventId: string;
   isCurrent: boolean;
   fullName: string;
-  ticketNumber: number;
+  ticketNumber: string;
   /** Persisted status — for superseded events, frozen at supersession time. */
   status: DrawEventStatus;
   /** Server draw timestamp, ISO 8601. */
@@ -88,7 +88,7 @@ export type WinnerRow = {
   roundLabel: string;
   prizeName: string;
   fullName: string;
-  ticketNumber: number;
+  ticketNumber: string;
   status: DrawEventStatus;
   /** Server draw timestamp of the current event, ISO 8601. */
   createdAt: string;
@@ -328,7 +328,7 @@ export type RedrawResult = {
   replacement: {
     drawEventId: string;
     fullName: string;
-    ticketNumber: number;
+    ticketNumber: string;
     status: DrawEventStatus;
   };
 };

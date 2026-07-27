@@ -46,11 +46,34 @@ export const allocationSchema = z.object({
     .max(10000, "Quantity cannot exceed 10,000."),
 });
 
+// Ticket/UID rules (D-E29): free-form printable text, NOT digits-only. Any
+// character an operator can reasonably type is accepted; only C0/C1 control
+// characters are refused, because those signal a mangled file or the wrong
+// column mapping rather than a real identifier. Uniqueness is case-sensitive.
+export const MAX_TICKET_LENGTH = 64;
+
+export const TICKET_REQUIRED = "Ticket/ID is required.";
+export const TICKET_TOO_LONG = `Ticket/ID must be ${MAX_TICKET_LENGTH} characters or fewer.`;
+export const TICKET_INVALID_CHARS = "Ticket/ID contains invalid characters.";
+
+/** True if `v` contains a C0 (0–31) or C1 (127–159) control character. */
+export function hasControlChars(v: string): boolean {
+  for (let i = 0; i < v.length; i++) {
+    const code = v.charCodeAt(i);
+    if (code < 32 || (code >= 127 && code <= 159)) return true;
+  }
+  return false;
+}
+
+export const ticketNumberSchema = z
+  .string({ message: TICKET_REQUIRED })
+  .trim()
+  .min(1, TICKET_REQUIRED)
+  .max(MAX_TICKET_LENGTH, TICKET_TOO_LONG)
+  .refine((v) => !hasControlChars(v), TICKET_INVALID_CHARS);
+
 export const entrantSchema = z.object({
-  ticketNumber: z
-    .number({ message: "Ticket must be a whole number" })
-    .int("Ticket must be a whole number")
-    .positive("Ticket must be a whole number"),
+  ticketNumber: ticketNumberSchema,
   fullName: z
     .string()
     .trim()

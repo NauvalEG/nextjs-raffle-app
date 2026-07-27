@@ -30,9 +30,9 @@ describe("importEntrants", () => {
   it("imports N valid rows as N entries + N retired tickets in one transaction", async () => {
     const raffleId = await newRaffle();
     const rows = [
-      { lineNumber: 2, ticketNumber: 1, fullName: "Alice" },
-      { lineNumber: 3, ticketNumber: 2, fullName: "Bob", contact: "bob@example.com" },
-      { lineNumber: 4, ticketNumber: 3, fullName: "Cara" },
+      { lineNumber: 2, ticketNumber: "1", fullName: "Alice" },
+      { lineNumber: 3, ticketNumber: "2", fullName: "Bob", contact: "bob@example.com" },
+      { lineNumber: 4, ticketNumber: "3", fullName: "Cara" },
     ];
 
     const data = expectOk(await importEntrants(raffleId, rows));
@@ -43,19 +43,56 @@ describe("importEntrants", () => {
       orderBy: { ticketNumber: "asc" },
     });
     expect(entries.map((e) => [e.ticketNumber, e.fullName, e.contact])).toEqual([
-      [1, "Alice", null],
-      [2, "Bob", "bob@example.com"],
-      [3, "Cara", null],
+      ["1", "Alice", null],
+      ["2", "Bob", "bob@example.com"],
+      ["3", "Cara", null],
     ]);
     expect(await db.retiredTicket.count({ where: { raffleId } })).toBe(3);
+  });
+
+  it("imports alphanumeric ticket/IDs verbatim, preserving case and leading zeros (D-E29)", async () => {
+    const raffleId = await newRaffle();
+    const ids = ["A-1024", "EMP_0092", "7f3c9b", "007", "abc", "ABC"];
+
+    const data = expectOk(
+      await importEntrants(
+        raffleId,
+        ids.map((t, i) => ({ lineNumber: i + 2, ticketNumber: t, fullName: `N${i}` }))
+      )
+    );
+    expect(data).toEqual({ imported: 6, rowErrors: [] });
+
+    const stored = await db.entry.findMany({
+      where: { raffleId },
+      select: { ticketNumber: true },
+    });
+    expect(stored.map((e) => e.ticketNumber).sort()).toEqual([...ids].sort());
+    // "abc" and "ABC" are two distinct tickets — uniqueness is case-sensitive.
+    expect(await db.entry.count({ where: { raffleId, ticketNumber: "abc" } })).toBe(1);
+    expect(await db.entry.count({ where: { raffleId, ticketNumber: "ABC" } })).toBe(1);
+    expect(await db.retiredTicket.count({ where: { raffleId } })).toBe(6);
+  });
+
+  it("rejects a ticket/ID longer than 64 characters, writing nothing", async () => {
+    const raffleId = await newRaffle();
+    const data = expectOk(
+      await importEntrants(raffleId, [
+        { lineNumber: 2, ticketNumber: "t".repeat(65), fullName: "Too Long" },
+      ])
+    );
+    expect(data.imported).toBe(0);
+    expect(data.rowErrors).toEqual([
+      { lineNumber: 2, reason: "Ticket/ID must be 64 characters or fewer." },
+    ]);
+    expect(await db.entry.count({ where: { raffleId } })).toBe(0);
   });
 
   it("re-validates server-side: one bad row blocks the whole batch, zero rows written", async () => {
     const raffleId = await newRaffle();
     const rows = [
-      { lineNumber: 2, ticketNumber: 10, fullName: "Good Row" },
-      { lineNumber: 3, ticketNumber: 11, fullName: "" }, // invalid: missing name
-      { lineNumber: 4, ticketNumber: 12, fullName: "Also Good" },
+      { lineNumber: 2, ticketNumber: "10", fullName: "Good Row" },
+      { lineNumber: 3, ticketNumber: "11", fullName: "" }, // invalid: missing name
+      { lineNumber: 4, ticketNumber: "12", fullName: "Also Good" },
     ];
 
     const data = expectOk(await importEntrants(raffleId, rows));
@@ -71,7 +108,7 @@ describe("importEntrants", () => {
     await db.raffle.update({ where: { id: raffleId }, data: { status: "LOCKED" } });
 
     const error = expectFail(
-      await importEntrants(raffleId, [{ lineNumber: 2, ticketNumber: 1, fullName: "X" }])
+      await importEntrants(raffleId, [{ lineNumber: 2, ticketNumber: "1", fullName: "X" }])
     );
     expect(error).toBe("This raffle is locked. Entrants can no longer be added.");
     expect(await db.entry.count({ where: { raffleId } })).toBe(0);
@@ -80,12 +117,12 @@ describe("importEntrants", () => {
 
   it("rejects a batch whose ticket duplicates an existing entrant, writing nothing", async () => {
     const raffleId = await newRaffle();
-    expectOk(await addEntrant(raffleId, { ticketNumber: 5, fullName: "Existing" }));
+    expectOk(await addEntrant(raffleId, { ticketNumber: "5", fullName: "Existing" }));
 
     const data = expectOk(
       await importEntrants(raffleId, [
-        { lineNumber: 2, ticketNumber: 5, fullName: "Clash" },
-        { lineNumber: 3, ticketNumber: 6, fullName: "Fine" },
+        { lineNumber: 2, ticketNumber: "5", fullName: "Clash" },
+        { lineNumber: 3, ticketNumber: "6", fullName: "Fine" },
       ])
     );
     expect(data.imported).toBe(0);
@@ -100,24 +137,33 @@ describe("importEntrants", () => {
 describe("ticket integrity (never-reuse ledger)", () => {
   it("rejects addEntrant with a ticket already used by an existing entrant", async () => {
     const raffleId = await newRaffle();
-    expectOk(await addEntrant(raffleId, { ticketNumber: 7, fullName: "First" }));
+    expectOk(await addEntrant(raffleId, { ticketNumber: "7", fullName: "First" }));
 
     const error = expectFail(
-      await addEntrant(raffleId, { ticketNumber: 7, fullName: "Second" })
+      await addEntrant(raffleId, { ticketNumber: "7", fullName: "Second" })
     );
     expect(error).toBe("Ticket number 7 is already used in this raffle.");
     expect(await db.entry.count({ where: { raffleId } })).toBe(1);
   });
 
+  it("a case-differing ticket/ID is a DIFFERENT ticket and is accepted (D-E29)", async () => {
+    const raffleId = await newRaffle();
+    expectOk(await addEntrant(raffleId, { ticketNumber: "vip-1", fullName: "Lower" }));
+    expectOk(await addEntrant(raffleId, { ticketNumber: "VIP-1", fullName: "Upper" }));
+
+    expect(await db.entry.count({ where: { raffleId } })).toBe(2);
+    expect(await db.retiredTicket.count({ where: { raffleId } })).toBe(2);
+  });
+
   it("add -> remove -> re-add of the same ticket is rejected as previously used", async () => {
     const raffleId = await newRaffle();
     const { entryId } = expectOk(
-      await addEntrant(raffleId, { ticketNumber: 9, fullName: "Removed Later" })
+      await addEntrant(raffleId, { ticketNumber: "9", fullName: "Removed Later" })
     );
     expectOk(await removeEntrant(entryId));
 
     const error = expectFail(
-      await addEntrant(raffleId, { ticketNumber: 9, fullName: "Comeback" })
+      await addEntrant(raffleId, { ticketNumber: "9", fullName: "Comeback" })
     );
     expect(error).toBe(
       "Ticket number 9 was previously used in this raffle and cannot be reused."
@@ -129,41 +175,57 @@ describe("ticket integrity (never-reuse ledger)", () => {
     const raffleA = await newRaffle();
     const raffleB = await newRaffle();
 
-    expectOk(await addEntrant(raffleA, { ticketNumber: 42, fullName: "In A" }));
-    expectOk(await addEntrant(raffleB, { ticketNumber: 42, fullName: "In B" }));
+    expectOk(await addEntrant(raffleA, { ticketNumber: "42", fullName: "In A" }));
+    expectOk(await addEntrant(raffleB, { ticketNumber: "42", fullName: "In B" }));
 
-    expect(await db.entry.count({ where: { raffleId: raffleB, ticketNumber: 42 } })).toBe(1);
+    expect(await db.entry.count({ where: { raffleId: raffleB, ticketNumber: "42" } })).toBe(1);
   });
 
   it("removeEntrant hard-deletes the Entry but the RetiredTicket ledger row survives", async () => {
     const raffleId = await newRaffle();
     const { entryId } = expectOk(
-      await addEntrant(raffleId, { ticketNumber: 3, fullName: "Ledgered" })
+      await addEntrant(raffleId, { ticketNumber: "3", fullName: "Ledgered" })
     );
 
     expectOk(await removeEntrant(entryId));
 
     expect(await db.entry.count({ where: { id: entryId } })).toBe(0);
     expect(
-      await db.retiredTicket.count({ where: { raffleId, ticketNumber: 3 } })
+      await db.retiredTicket.count({ where: { raffleId, ticketNumber: "3" } })
     ).toBe(1);
   });
 });
 
 describe("addEntrant validation + status gating", () => {
-  it("rejects a non-positive ticket number without writing", async () => {
+  it("rejects an empty/whitespace-only ticket/ID without writing", async () => {
+    const raffleId = await newRaffle();
+    for (const ticketNumber of ["", "   "]) {
+      const error = expectFail(await addEntrant(raffleId, { ticketNumber, fullName: "Blank" }));
+      expect(error).toBe("Ticket/ID is required.");
+    }
+    expect(await db.entry.count({ where: { raffleId } })).toBe(0);
+  });
+
+  it("accepts a free-form alphanumeric ticket/ID (D-E29)", async () => {
+    const raffleId = await newRaffle();
+    expectOk(await addEntrant(raffleId, { ticketNumber: " A-1024 ", fullName: "Ana" }));
+    // Trimmed, case preserved.
+    expect(await db.entry.count({ where: { raffleId, ticketNumber: "A-1024" } })).toBe(1);
+  });
+
+  it("rejects a ticket/ID longer than 64 characters without writing", async () => {
     const raffleId = await newRaffle();
     const error = expectFail(
-      await addEntrant(raffleId, { ticketNumber: 0, fullName: "Zero" })
+      await addEntrant(raffleId, { ticketNumber: "t".repeat(65), fullName: "Long" })
     );
-    expect(error).toBe("Ticket must be a whole number");
+    expect(error).toBe("Ticket/ID must be 64 characters or fewer.");
     expect(await db.entry.count({ where: { raffleId } })).toBe(0);
   });
 
   it("rejects an empty full name without writing", async () => {
     const raffleId = await newRaffle();
     const error = expectFail(
-      await addEntrant(raffleId, { ticketNumber: 1, fullName: "   " })
+      await addEntrant(raffleId, { ticketNumber: "1", fullName: "   " })
     );
     expect(error).toBe("Full name is required.");
     expect(await db.entry.count({ where: { raffleId } })).toBe(0);
@@ -172,12 +234,12 @@ describe("addEntrant validation + status gating", () => {
   it("rejects add and remove on a LOCKED raffle", async () => {
     const raffleId = await newRaffle();
     const { entryId } = expectOk(
-      await addEntrant(raffleId, { ticketNumber: 1, fullName: "Kept" })
+      await addEntrant(raffleId, { ticketNumber: "1", fullName: "Kept" })
     );
     await db.raffle.update({ where: { id: raffleId }, data: { status: "LOCKED" } });
 
     const addError = expectFail(
-      await addEntrant(raffleId, { ticketNumber: 2, fullName: "Late" })
+      await addEntrant(raffleId, { ticketNumber: "2", fullName: "Late" })
     );
     expect(addError).toBe("This raffle is locked. Entrants can no longer be added.");
 

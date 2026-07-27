@@ -23,10 +23,10 @@ const LOCKED_ADD = "This raffle is locked. Entrants can no longer be added.";
 const LOCKED_REMOVE = "This raffle is locked. Entrants can no longer be removed.";
 const ALREADY_REMOVED = "This entrant was already removed.";
 
-function alreadyUsedMessage(n: number): string {
+function alreadyUsedMessage(n: string): string {
   return `Ticket number ${n} is already used in this raffle.`;
 }
-function previouslyUsedMessage(n: number): string {
+function previouslyUsedMessage(n: string): string {
   return `Ticket number ${n} was previously used in this raffle and cannot be reused.`;
 }
 
@@ -94,6 +94,7 @@ export async function importEntrants(
           select: { ticketNumber: true },
         }),
       ]);
+      // Case-sensitive comparison, matching the DB unique index (D-E29).
       const existingSet = new Set(existing.map((e) => e.ticketNumber));
       const retiredSet = new Set(retired.map((r) => r.ticketNumber));
 
@@ -150,7 +151,7 @@ export async function importEntrants(
 
 export async function addEntrant(
   raffleId: string,
-  input: { ticketNumber: number; fullName: string; contact?: string }
+  input: { ticketNumber: string; fullName: string; contact?: string }
 ): Promise<ActionResult<{ entryId: string }>> {
   await requireSession();
 

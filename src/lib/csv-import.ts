@@ -1,5 +1,12 @@
 import Papa from "papaparse";
 
+import {
+  MAX_TICKET_LENGTH,
+  TICKET_INVALID_CHARS,
+  TICKET_TOO_LONG,
+  hasControlChars,
+} from "@/lib/validation";
+
 // Pure CSV import logic for E1-02 (Bulk Import / Column Mapping / Preview).
 // No IO, no React, no Prisma — unit-testable in isolation. The client uses
 // this to build the preview; the Server Action re-runs the SAME validation
@@ -21,18 +28,16 @@ export const TICKET_ALIASES = ["ticket", "ticket_number", "id"] as const;
 export const NAME_ALIASES = ["name", "full_name", "fullname"] as const;
 export const CONTACT_ALIASES = ["contact", "email", "phone"] as const;
 
-// Postgres Int (int4) ceiling — a "ticket" beyond this cannot be stored and is
-// rejected as not a valid whole ticket number.
-const MAX_TICKET_NUMBER = 2_147_483_647;
-
 // ---------------------------------------------------------------------------
-// Row-rejection reasons — exact strings per FSD / D-E04. Length reasons reuse
-// the entrantSchema messages from @/lib/validation for client/server parity.
+// Row-rejection reasons — exact strings per FSD / D-E04. Ticket and length
+// reasons reuse the entrantSchema messages from @/lib/validation so the
+// preview, the individual add form, and the Server Action all agree.
 // ---------------------------------------------------------------------------
 
 export const REASON_MISSING_TICKET = "Missing ticket/ID";
 export const REASON_MISSING_NAME = "Missing full name";
-export const REASON_TICKET_NOT_WHOLE = "Ticket must be a whole number";
+export const REASON_TICKET_TOO_LONG = TICKET_TOO_LONG;
+export const REASON_TICKET_INVALID = TICKET_INVALID_CHARS;
 export const REASON_DUPLICATE_TICKET = "Duplicate ticket number";
 export const REASON_NAME_TOO_LONG = "Full name must be 200 characters or fewer.";
 export const REASON_CONTACT_TOO_LONG = "Contact must be 200 characters or fewer.";
@@ -160,7 +165,8 @@ export type MappedRow = {
 /** A row that passed validation and is ready to persist. */
 export type ImportableRow = {
   lineNumber: number;
-  ticketNumber: number;
+  /** Free-form ticket/UID, trimmed and case-preserved (D-E29). */
+  ticketNumber: string;
   fullName: string;
   contact?: string;
 };
@@ -190,41 +196,41 @@ export function applyMapping(rows: CsvRow[], mapping: ColumnMapping): MappedRow[
  *
  * Rules (FSD Preview Validation + D-E04):
  *  - everything trimmed; whitespace-only counts as missing
- *  - ticket: required, positive whole number (digits only, > 0, fits int4)
+ *  - ticket: required, free-form text ≤ 64 chars, no control characters (D-E29)
  *  - name: required after trim, ≤ 200 chars
  *  - contact: optional, ≤ 200 chars, empty → omitted
  *  - duplicate tickets within the batch: first (valid) occurrence wins;
- *    later occurrences rejected with "Duplicate ticket number"
+ *    later occurrences rejected with "Duplicate ticket number". Comparison is
+ *    case-SENSITIVE, so "abc" and "ABC" are two distinct tickets (D-E29)
  *  - tickets in `knownUsedTickets` (e.g. the raffle's current entrants, for
  *    the client preview) rejected with "Duplicate ticket number" (FSD Alt 3)
  */
 export function validateMappedRows(
   rows: MappedRow[],
-  knownUsedTickets?: ReadonlySet<number>
+  knownUsedTickets?: ReadonlySet<string>
 ): RowPartition {
   const importable: ImportableRow[] = [];
   const rejected: RejectedRow[] = [];
-  const claimedTickets = new Set<number>(knownUsedTickets ?? []);
+  const claimedTickets = new Set<string>(knownUsedTickets ?? []);
 
   for (const row of rows) {
-    const ticketRaw = row.ticket.trim();
+    const ticketNumber = row.ticket.trim();
     const name = row.name.trim();
     const contact = row.contact.trim();
 
     const reject = (reason: string) =>
-      rejected.push({ lineNumber: row.lineNumber, ticket: ticketRaw, name, contact, reason });
+      rejected.push({ lineNumber: row.lineNumber, ticket: ticketNumber, name, contact, reason });
 
-    if (ticketRaw === "") {
+    if (ticketNumber === "") {
       reject(REASON_MISSING_TICKET);
       continue;
     }
-    if (!/^\d+$/.test(ticketRaw)) {
-      reject(REASON_TICKET_NOT_WHOLE);
+    if (ticketNumber.length > MAX_TICKET_LENGTH) {
+      reject(REASON_TICKET_TOO_LONG);
       continue;
     }
-    const ticketNumber = Number(ticketRaw);
-    if (!Number.isSafeInteger(ticketNumber) || ticketNumber < 1 || ticketNumber > MAX_TICKET_NUMBER) {
-      reject(REASON_TICKET_NOT_WHOLE);
+    if (hasControlChars(ticketNumber)) {
+      reject(REASON_TICKET_INVALID);
       continue;
     }
     if (name === "") {
@@ -260,7 +266,7 @@ export function validateMappedRows(
 export function validateRows(
   rows: CsvRow[],
   mapping: ColumnMapping,
-  knownUsedTickets?: ReadonlySet<number>
+  knownUsedTickets?: ReadonlySet<string>
 ): RowPartition {
   return validateMappedRows(applyMapping(rows, mapping), knownUsedTickets);
 }

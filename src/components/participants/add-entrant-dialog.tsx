@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { entrantSchema } from "@/lib/validation";
+import { MAX_TICKET_LENGTH, entrantSchema } from "@/lib/validation";
 
 // Individual add form (E1-02 Feature: Participant Table & Individual Add).
 // Client validation uses the same entrantSchema the Server Action re-runs.
@@ -59,9 +59,9 @@ export function AddEntrantDialog({
       setError("Missing ticket/ID");
       return;
     }
-    const ticketNumber = /^\d+$/.test(ticketTrimmed) ? Number(ticketTrimmed) : NaN;
+    // Ticket/IDs are free-form text (D-E29) — no numeric coercion.
     const parsed = entrantSchema.safeParse({
-      ticketNumber,
+      ticketNumber: ticketTrimmed,
       fullName,
       contact,
     });
@@ -91,20 +91,20 @@ export function AddEntrantDialog({
         <DialogHeader>
           <DialogTitle>Add entrant</DialogTitle>
           <DialogDescription>
-            Ticket numbers must be unique within this raffle and are never reused, even
-            after removal.
+            Ticket/IDs may contain letters, numbers, and punctuation. They must be unique
+            within this raffle (case-sensitive) and are never reused, even after removal.
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="add-entrant-ticket">Ticket #</Label>
+            <Label htmlFor="add-entrant-ticket">Ticket/ID</Label>
             <Input
               id="add-entrant-ticket"
-              inputMode="numeric"
               autoComplete="off"
               value={ticket}
               onChange={(e) => setTicket(e.target.value)}
-              placeholder="e.g. 42"
+              maxLength={MAX_TICKET_LENGTH}
+              placeholder="e.g. 42 or A-1024"
             />
           </div>
           <div className="space-y-2">

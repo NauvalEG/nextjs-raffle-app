@@ -25,13 +25,13 @@ import { ImportEntrantsDialog } from "@/components/participants/import-entrants-
 import { RemoveEntrantDialog } from "@/components/participants/remove-entrant-dialog";
 
 // Participant table (E1-02, Feature: Participant Table & Individual Add/Remove).
-// Columns: ticket #, full name, contact, added date; sorted ticket asc (server
+// Columns: ticket/ID, full name, contact, added date; sorted ticket asc (server
 // supplies the order). Mutation controls are DISABLED — not hidden — with a
 // tooltip when the raffle is past OPEN (FSD Alt 1 / PRD epic AC 4).
 
 export type EntryRow = {
   id: string;
-  ticketNumber: number;
+  ticketNumber: string;
   fullName: string;
   contact: string | null;
   createdAt: string; // ISO
@@ -145,7 +145,7 @@ export function ParticipantsView({
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="w-28">Ticket #</TableHead>
+                <TableHead className="w-28">Ticket/ID</TableHead>
                 <TableHead>Full name</TableHead>
                 <TableHead>Contact</TableHead>
                 <TableHead className="w-36">Added</TableHead>

@@ -2,12 +2,15 @@ import { notFound } from "next/navigation";
 
 import { db } from "@/lib/db";
 import { isStructureMutable } from "@/lib/lifecycle";
+import { sortByTicket } from "@/lib/ticket";
 import { ParticipantsView } from "@/components/participants/participants-view";
 
 // Participant management screen (E1-02). Server component: loads the raffle
 // (status gates the mutation controls) and the full entrant list sorted by
-// ticket number ascending (FSD A14). All interactivity lives in the client
-// ParticipantsView; every mutation is re-validated server-side regardless.
+// ticket/ID ascending (FSD A14). Ticket/IDs are text (D-E29), so the natural
+// ordering is applied in memory — a SQL ORDER BY would list "1, 10, 2". All
+// interactivity lives in the client ParticipantsView; every mutation is
+// re-validated server-side regardless.
 
 export default async function ParticipantsPage({
   params,
@@ -23,7 +26,6 @@ export default async function ParticipantsPage({
       title: true,
       status: true,
       entries: {
-        orderBy: { ticketNumber: "asc" },
         select: {
           id: true,
           ticketNumber: true,
@@ -43,7 +45,7 @@ export default async function ParticipantsPage({
       raffleTitle={raffle.title}
       raffleStatus={raffle.status}
       mutable={isStructureMutable(raffle.status)}
-      entries={raffle.entries.map((e) => ({
+      entries={sortByTicket(raffle.entries).map((e) => ({
         id: e.id,
         ticketNumber: e.ticketNumber,
         fullName: e.fullName,

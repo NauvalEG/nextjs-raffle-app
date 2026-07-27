@@ -153,8 +153,10 @@ describe("executeRound", () => {
 
     // Post-lock direct deletion shrinks the pool below the allocation — the
     // scenario lock validation should have made impossible.
+    // Ticket/IDs are text (D-E29): name the survivor explicitly rather than
+    // relying on an ordering comparison.
     await db.entry.deleteMany({
-      where: { raffleId: seedEx.raffleId, ticketNumber: { gt: 1 } },
+      where: { raffleId: seedEx.raffleId, ticketNumber: { notIn: ["1"] } },
     });
 
     const error = expectFail(await executeRound(seedEx.rounds[0].id));

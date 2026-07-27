@@ -35,7 +35,7 @@ export type DrawScreenSlot = {
   roundAllocationId: string;
   sequenceInAllocation: number;
   prizeLabel: string;
-  winner: { fullName: string; ticketNumber: number };
+  winner: { fullName: string; ticketNumber: string };
 };
 
 export type DrawScreenAllocation = {

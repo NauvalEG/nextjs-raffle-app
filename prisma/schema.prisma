@@ -1,7 +1,8 @@
 // Raffle App — Prisma schema
 // Entities per PRD v1.3 §6.3 and FSDs E1-01..E3-01.
 // Hard rules encoded here:
-//  - Ticket numbers unique per raffle (@@unique) + never reused (RetiredTicket ledger, D-E03).
+//  - Ticket/UIDs are free-form text (VarChar(64)), unique per raffle (@@unique) and never
+//    reused (RetiredTicket ledger, D-E03). Uniqueness is case-sensitive (D-E29).
 //  - DrawEvent facts are write-once; only status + supersededById are ever mutated (enforced in actions).
 //  - supersededById is @unique: an event can supersede at most one original (E2-02 Rule 2).
 //  - AuditLog is append-only; no update/delete path exists anywhere in the app.
@@ -90,7 +91,9 @@ model RoundAllocation {
 model Entry {
   id           String   @id @default(cuid())
   raffleId     String
-  ticketNumber Int
+  // Free-form ticket/UID as typed by the operator (e.g. "42", "A-1024", "EMP_0092").
+  // Uniqueness is case-SENSITIVE: "abc" and "ABC" are distinct tickets.
+  ticketNumber String   @db.VarChar(64)
   fullName     String   @db.VarChar(200)
   contact      String?  @db.VarChar(200) // [SENSITIVE] admin-only; never on any public surface
   createdAt    DateTime @default(now())
@@ -108,7 +111,7 @@ model Entry {
 model RetiredTicket {
   id           String @id @default(cuid())
   raffleId     String
-  ticketNumber Int
+  ticketNumber String @db.VarChar(64)
 
   raffle Raffle @relation(fields: [raffleId], references: [id], onDelete: Cascade)
 

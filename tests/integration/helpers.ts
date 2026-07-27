@@ -8,6 +8,7 @@
 // of each *.test.ts file, not here.
 
 import { db } from "@/lib/db";
+import { sortByTicket } from "@/lib/ticket";
 import type { ActionResult } from "@/lib/action-result";
 
 export function uniqueTitle(prefix = "it"): string {
@@ -92,14 +93,14 @@ export type SeedRoundSpec = {
   allocations: { prize: string; quantity: number }[];
 };
 
-export type SeedEntry = { id: string; ticketNumber: number; fullName: string };
+export type SeedEntry = { id: string; ticketNumber: string; fullName: string };
 
 export type SeedResult = {
   raffleId: string;
   /** prize name -> PrizeType id */
   prizeTypes: Record<string, string>;
   rounds: { id: string; order: number; label: string; allocationIds: string[] }[];
-  /** ordered by ticketNumber asc */
+  /** ordered by ticketNumber ascending, in natural (numeric-aware) order */
   entries: SeedEntry[];
 };
 
@@ -107,7 +108,7 @@ export async function seedStructure(spec: {
   title?: string;
   entrantCount: number;
   namePrefix?: string;
-  /** contact per ticket number; undefined -> null contact */
+  /** contact per 1-based entrant index; undefined -> null contact */
   contactFor?: (ticketNumber: number) => string | undefined;
   rounds?: SeedRoundSpec[];
 }): Promise<SeedResult> {
@@ -156,16 +157,19 @@ export async function seedStructure(spec: {
     await db.entry.createMany({
       data: Array.from({ length: spec.entrantCount }, (_, i) => ({
         raffleId: raffle.id,
-        ticketNumber: i + 1,
+        ticketNumber: String(i + 1),
         fullName: `${spec.namePrefix ?? "Entrant"} ${i + 1}`,
         contact: spec.contactFor?.(i + 1) ?? null,
       })),
     });
-    entries = await db.entry.findMany({
-      where: { raffleId: raffle.id },
-      orderBy: { ticketNumber: "asc" },
-      select: { id: true, ticketNumber: true, fullName: true },
-    });
+    // Ticket/IDs are text (D-E29), so a SQL ORDER BY would give "1, 10, 2".
+    // Sort naturally in memory to keep `entries` in 1..N order.
+    entries = sortByTicket(
+      await db.entry.findMany({
+        where: { raffleId: raffle.id },
+        select: { id: true, ticketNumber: true, fullName: true },
+      })
+    );
   }
 
   return { raffleId: raffle.id, prizeTypes, rounds, entries };

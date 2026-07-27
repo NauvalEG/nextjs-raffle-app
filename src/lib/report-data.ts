@@ -1,6 +1,7 @@
 import type { DrawEventStatus, RaffleStatus } from "@prisma/client";
 
 import { db } from "@/lib/db";
+import { sortByTicket } from "@/lib/ticket";
 
 // E3-01 server-side data assembly, shared by the report page and both export
 // route handlers. Everything here is READ-ONLY: zero writes, zero audit
@@ -30,7 +31,7 @@ export const EXPORT_STATUS: Record<DrawEventStatus, string> = {
 export type ReportHistoryEvent = {
   drawEventId: string;
   fullName: string;
-  ticketNumber: number;
+  ticketNumber: string;
   /** Terminal status at supersession time (disqualified / released). */
   status: DrawEventStatus;
   /** Draw timestamp of the superseded event, ISO 8601 UTC. */
@@ -49,7 +50,7 @@ export type ReportSlot = {
   winner: {
     drawEventId: string;
     fullName: string;
-    ticketNumber: number;
+    ticketNumber: string;
     status: DrawEventStatus;
     createdAt: string;
   } | null;
@@ -239,10 +240,9 @@ export async function getResultsExportRows(
   if (!raffle) return null;
 
   // Constant query count: entries + all draw events, joined in memory.
-  const [entries, events] = await Promise.all([
+  const [allEntries, events] = await Promise.all([
     db.entry.findMany({
       where: { raffleId },
-      orderBy: { ticketNumber: "asc" },
       select: { id: true, ticketNumber: true, fullName: true, contact: true },
     }),
     db.drawEvent.findMany({
@@ -261,6 +261,10 @@ export async function getResultsExportRows(
       },
     }),
   ]);
+
+  // Ticket/IDs are text (D-E29): sort in natural order so the export reads
+  // "1, 2, 10" rather than the lexicographic "1, 10, 2".
+  const entries = sortByTicket(allEntries);
 
   const eventsByEntry = new Map<string, typeof events>();
   for (const e of events) {
@@ -285,7 +289,7 @@ export async function getResultsExportRows(
     const winnerStatus =
       own.length > 0 ? EXPORT_STATUS[own[own.length - 1].status] : "";
 
-    const row = [String(entry.ticketNumber), entry.fullName];
+    const row = [entry.ticketNumber, entry.fullName];
     if (includeContact) row.push(entry.contact ?? "");
     row.push(drawRound, prize, winnerStatus);
     return row;
